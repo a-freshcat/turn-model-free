@@ -1,0 +1,240 @@
+/**
+ * Guards the copy against drift and missing pieces.
+ *
+ * The page is a byte-for-byte copy of the plugin's code, so the one thing that
+ * can silently ruin it is the *extraction* going stale: someone updates the
+ * plugin, or edits the generated file by hand. These tests re-derive the copy
+ * from the installed `client.js` and compare.
+ */
+
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+const hash = text => createHash('sha256').update(text, 'utf8').digest('hex')
+
+/**
+ * `provenance.json` stores the source as `~/...` so the copy stays identical
+ * wherever the folder sits (a relative path would change with the folder's
+ * depth, and a backup that fails its own drift check after being unzipped
+ * elsewhere is worse than no check). Expand it here.
+ */
+function resolveSource() {
+  const explicit = process.env.OFM_CLIENT_PATH
+  if (explicit !== undefined && explicit !== '') return explicit
+  const provenance = JSON.parse(readFileSync(join(process.cwd(), 'src/extracted/provenance.json'), 'utf8'))
+  const label = String(provenance.source).replace(/\\/g, '/')
+  return label.startsWith('~/') ? join(homedir(), label.slice(2)) : label
+}
+
+export default {
+  title: 'Provenance · 抄写没有漂移',
+  tests: [
+    {
+      name: '生成物与已安装插件逐字节一致（extract 可重跑）',
+      async run({ assert, readFile }) {
+        const provenancePath = 'src/extracted/provenance.json'
+        assert.ok(existsSync(join(process.cwd(), provenancePath)), 'provenance.json exists')
+        const provenance = JSON.parse(readFileSync(join(process.cwd(), provenancePath), 'utf8'))
+        assert.ok(provenance.sourceSha256.length === 64, 'source hash recorded')
+        assert.ok(provenance.ranges.region.lines[0] > 0, 'source line range recorded')
+
+        const sourcePath = resolveSource()
+        if (!existsSync(sourcePath)) {
+          // The installed plugin is the point of comparison; without it the
+          // copy can still be checked for internal consistency (below).
+          return
+        }
+        const source = readFileSync(sourcePath, 'utf8')
+        assert.equal(hash(source), provenance.sourceSha256, 'installed client.js is the one the copy came from')
+
+        const generated = readFile('src/extracted/channels-page.js')
+        // Each recorded range, sliced out again by its exact character offsets,
+        // must hash to the recorded value and appear verbatim in the generated
+        // file — that is what "copy" means here.
+        for (const [key, record] of Object.entries(provenance.ranges)) {
+          const [start, end] = record.chars
+          const slice = source.slice(start, end)
+          assert.equal(hash(slice), record.sha256, `${key}: slice hash matches provenance`)
+        }
+        // the page region ships from its first component onward (the three tables
+        // above it are copied from their own ranges)
+        const [regionStart, regionEnd] = provenance.ranges.region.chars
+        const region = source.slice(regionStart, regionEnd)
+        const cut = region.indexOf('    function sameChannelTransport(')
+        assert.ok(cut > 0, 'page region starts with the components')
+        assert.ok(generated.includes(region.slice(cut).trimEnd()), 'page region copied verbatim')
+        for (const key of ['icons', 'providers', 'credits']) {
+          const [start, end] = provenance.ranges[key].chars
+          assert.ok(generated.includes(source.slice(start, end).trimEnd()), `${key} table copied verbatim`)
+        }
+        // and the helper blocks carry their recorded hashes too
+        for (const [key, record] of Object.entries(provenance.helpers)) {
+          const [start, end] = record.chars
+          assert.equal(hash(source.slice(start, end)), record.sha256, `${key}: helper hash matches provenance`)
+        }
+      },
+    },
+    {
+      name: 'CSS 子集只包含原插件里真实存在的规则（无手写伪造）',
+      async run({ assert, readFile }) {
+        const provenance = JSON.parse(readFile('src/extracted/provenance.json'))
+        const css = readFile('src/extracted/channels.css')
+        assert.equal(provenance.css.keptRules, 162, 'rule count recorded')
+        assert.ok(css.length > 28_000, 'stylesheet copied')
+        assert.notIncludes(css, 'hand-written', 'no hand-written rules')
+        // every selector must be one the plugin's own stylesheet has
+        const source = resolveSource()
+        if (existsSync(source)) {
+          const client = readFileSync(source, 'utf8')
+          const selectors = [...css.matchAll(/^([.#][^{}\n]+)\{/gm)].map(match => match[1].trim())
+          assert.ok(selectors.length > 100, `selectors parsed (${selectors.length})`)
+          const missing = selectors.filter(selector => !client.includes(selector))
+          assert.deepEqual(missing.slice(0, 5), [], 'selectors all exist in client.js')
+        }
+      },
+    },
+    {
+      name: '词条文件就是插件 DICT 的 chan.* 子集（69 × 2，无缺失）',
+      async run({ assert, readFile }) {
+        const provenance = JSON.parse(readFile('src/extracted/provenance.json'))
+        assert.equal(provenance.dict.zhKeys, 69, 'zh keys')
+        assert.equal(provenance.dict.enKeys, 69, 'en keys')
+        assert.deepEqual(provenance.dict.missingEn, [], 'no zh-only key')
+        assert.deepEqual(provenance.dict.missingZh, [], 'no en-only key')
+        const dict = readFile('src/extracted/channels-dict.js')
+        assert.includes(dict, "export const CHANNEL_DICT")
+        assert.equal((dict.match(/^\s{4}"chan\./gm) ?? []).length, 138, 'both locales present')
+      },
+    },
+    {
+      name: '主题令牌来自安装包，不是手抄的颜色值',
+      async run({ assert, readFile }) {
+        const css = readFile('src/extracted/theme-tokens.css')
+        assert.includes(css, 'AUTO-GENERATED by scripts/extract-theme.mjs')
+        assert.includes(css, 'app.asar')
+        assert.includes(css, 'body[data-ds-dark-theme]')
+        const light = (css.match(/^\s{2}--dsw-/gm) ?? []).length
+        assert.ok(light > 400, `token count (${light})`)
+        // a missing token means an invisible card: spot-check the ones the page needs
+        for (const token of [
+          '--dsw-alias-bg-layer-1', '--dsw-alias-bg-layer-2', '--dsw-alias-bg-layer-3',
+          '--dsw-alias-label-primary', '--dsw-alias-label-secondary', '--dsw-alias-label-tertiary',
+          '--dsw-alias-border-l1', '--dsw-alias-border-l2', '--dsw-alias-bg-mask-1',
+          '--dsw-alias-state-business-primary', '--dsw-alias-state-success-primary',
+          '--dsw-alias-state-error-primary', '--dsw-alias-state-warning-primary',
+          '--dsw-alias-label-on-accent', '--dsw-mask-blur',
+        ]) {
+          assert.includes(css, token + ':')
+        }
+        // and dark theme must actually redefine the layer colours
+        const dark = css.slice(css.indexOf('body[data-ds-dark-theme]'))
+        assert.includes(dark.slice(0, 6000), '--dsw-alias-bg-layer-1')
+      },
+    },
+    {
+      name: '页面用到的每个 CSS 变量都有定义（页面之外不背锅）',
+      async run({ assert, readFile }) {
+        const page = readFile('src/extracted/channels.css')
+        const tokens = readFile('src/extracted/theme-tokens.css')
+        const declaredInPage = new Set([...page.matchAll(/(--[A-Za-z0-9-]+)\s*:/g)].map(match => match[1]))
+        const declaredInTheme = new Set([...tokens.matchAll(/(--[A-Za-z0-9-]+)\s*:/g)].map(match => match[1]))
+        const consumed = new Set()
+        for (const match of page.matchAll(/var\(\s*(--[A-Za-z0-9-]+)/g)) consumed.add(match[1])
+        // `--chan-accent` is set inline by the component (`style={{'--chan-accent': accent}}`),
+        // so it is defined per card at runtime rather than in the sheet.
+        const runtimeOnly = new Set(['--chan-accent'])
+        const undefinedVars = [...consumed].filter(name => !declaredInPage.has(name) && !declaredInTheme.has(name) && !runtimeOnly.has(name))
+        assert.deepEqual(undefinedVars, [], 'every consumed variable is declared')
+        const code = readFile('src/extracted/channels-page.js')
+        for (const name of runtimeOnly) assert.includes(code, name, `${name} is set by the component`)
+        // the easing tokens the animations depend on live on .ofm_root in the sheet
+        for (const name of ['--ease-instrument', '--ease-settle', '--gap']) {
+          assert.ok(declaredInPage.has(name), `${name} declared by the page stylesheet`)
+        }
+      },
+    },
+    {
+      name: '迷你 DOM 提供页面用到的浏览器 API（测试环境不是摆设）',
+      async run({ assert, readFile }) {
+        const dom = readFile('src/runtime/mini-dom.mjs')
+        for (const api of [
+          'querySelector', 'querySelectorAll', 'addEventListener', 'removeEventListener',
+          'dispatchEvent', 'appendChild', 'removeChild', 'insertBefore', 'setAttribute',
+          'toggleAttribute', 'classList', 'dataset', 'textContent', 'isConnected',
+        ]) {
+          assert.includes(dom, api)
+        }
+        // and it refuses to pretend about what it does not implement
+        assert.notIncludes(dom, 'innerHTML =')
+      },
+    },
+    {
+      name: '提取脚本与测试独立可跑：npm 脚本都指向真实文件',
+      async run({ assert, readFile }) {
+        const pkg = JSON.parse(readFile('package.json'))
+        for (const [name, command] of Object.entries(pkg.scripts)) {
+          const match = /node ([\w./-]+)/.exec(command)
+          assert.ok(match, `${name} runs node`)
+          assert.ok(existsSync(join(process.cwd(), match[1])), `${name}: ${match[1]} exists`)
+        }
+        assert.ok(pkg.scripts.test, 'test script')
+        assert.ok(pkg.scripts.extract, 'extract script')
+        assert.ok(pkg.scripts['check:drift'], 'drift check script')
+        assert.ok(pkg.scripts.demo, 'demo build script')
+      },
+    },
+    {
+      name: '可搬迁：生成物里没有相对本目录的路径，解压到别处不会「误报漂移」',
+      async run({ assert, readFile }) {
+        // A relative path (`../../.dsh/profiles/...`) changes with the folder's
+        // depth, so the same plugin at the same version would regenerate
+        // different bytes after the copy moved — the drift check would then fail
+        // on a perfectly good backup.
+        const generated = [
+          'src/extracted/channels-page.js',
+          'src/extracted/channels-dict.js',
+          'src/extracted/channels.css',
+          'src/extracted/provenance.json',
+          'src/extracted/theme-tokens.css',
+        ]
+        for (const path of generated) {
+          const text = readFile(path)
+          // a source label must be absolute or `~`-abbreviated
+          for (const match of text.matchAll(/(?:Source: |"source": ")([^"\n]+)/g)) {
+            const label = match[1].replace(/:\d+$/, '')
+            assert.ok(
+              label.startsWith('~') || /^[A-Za-z]:\//.test(label) || label.startsWith('/'),
+              `${path}: source label must be absolute, got ${JSON.stringify(label)}`,
+            )
+            assert.notIncludes(label, '../', `${path}: no parent-relative label`)
+          }
+        }
+        // and no absolute path may point *inside* this checkout, or moving the
+        // folder would break the recorded provenance
+        const root = process.cwd().replace(/\\/g, '/')
+        for (const path of generated) {
+          assert.notIncludes(readFile(path).replace(/\\/g, '/'), root, `${path}: no self-referencing absolute path`)
+        }
+      },
+    },
+    {
+      name: '可搬迁：演示页与所有资源都是相对路径（换目录、file:// 下都能开）',
+      async run({ assert, readFile }) {
+        const html = readFile('dist/index.html')
+        // every src/href must be relative: an absolute path breaks on another machine
+        for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
+          const url = match[1]
+          assert.ok(!/^([A-Za-z]:|\/|\\\\|https?:)/.test(url), `absolute or remote resource: ${url}`)
+          assert.ok(existsSync(join(process.cwd(), 'dist', url)), `dist/${url} exists`)
+        }
+        // and the bundle must not hard-code this checkout's location
+        const bundle = readFile('dist/demo.js').replace(/\\/g, '/')
+        assert.notIncludes(bundle, process.cwd().replace(/\\/g, '/'), 'bundle has no absolute checkout path')
+        // node_modules is what the tests need; the demo itself needs nothing but dist/
+        assert.ok(existsSync(join(process.cwd(), 'node_modules', 'react', 'package.json')), 'react is vendored in')
+      },
+    },
+  ],
+}

@@ -1,0 +1,18 @@
+{
+  "source": "main_repai/our-free-model-codearts/tencent-gate-guard.js",
+  "sourceSha256": "dfb86be77bcf451b6fa4629d5591bcf80903b3cda82018736b4d66e6d625baed",
+  "sourceBytes": 19679,
+  "mergedBytes": 21263,
+  "mergedSha256": "959e4641f0264d441bd2d6c038b82392326fa8c51f0318d46e4b8522caf8b28e",
+  "packageVersion": "2.5.4",
+  "installPackSha256": "9b6d430a51bd047534bba4608024a5e571e277fa8b9534cb143f0db119b544cc",
+  "rules": 10,
+  "defaultMaxEscalations": 2,
+  "rewrites": [
+    {
+      "what": "readFileSync / homedir / join 三个宿主名字改为模块级可变绑定",
+      "why": "原文靠 pack.js 顶部的 node:fs / node:os / node:path 导入；移植后需要由宿主注入，否则无 fs 环境会抛错（原文的 catch 会退回内置表，行为不变）",
+      "bodyUnchanged": true
+    }
+  ]
+}

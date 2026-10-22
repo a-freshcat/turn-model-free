@@ -1,0 +1,211 @@
+{
+  "source": "~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js",
+  "version": "2.5.4",
+  "sourceSha256": "d5b22d78d2a76fd94bd828a77c3224d4318ca8e2abb5a7dd6aab3f3bf20cdb85",
+  "usedClasses": [
+    "ofm_chan",
+    "ofm_glass",
+    "ofm_chanhead",
+    "ofm_chanlogo",
+    "ofm_chanid",
+    "ofm_chanstate",
+    "ofm_dot",
+    "ofm_note",
+    "ofm_chanmeta",
+    "ofm_credittotal",
+    "ofm_chanacts",
+    "ofm_seg",
+    "ofm_btn",
+    "ofm_foldtoggle",
+    "ofm_balanceerror",
+    "ofm_chanfold",
+    "ofm_skel",
+    "ofm_acctlist",
+    "ofm_acct",
+    "ofm_acctname",
+    "ofm_acctmeta",
+    "ofm_creditbadge",
+    "ofm_acctacts",
+    "ofm_minibtn",
+    "ofm_row",
+    "ofm_modellist",
+    "ofm_modelrow",
+    "ofm_id",
+    "ofm_tagpill",
+    "ofm_scrim",
+    "ofm_modal",
+    "ofm_modalhead",
+    "ofm_modalbody",
+    "ofm_loginbody",
+    "ofm_loginstep",
+    "ofm_mono",
+    "ofm_scanline",
+    "ofm_modalfoot",
+    "ofm_page",
+    "ofm_hero",
+    "ofm_pagehead",
+    "ofm_pagetitle",
+    "ofm_pagesub",
+    "ofm_pills",
+    "ofm_callout",
+    "ofm_error",
+    "ofm_chanwrap",
+    "ofm_toast",
+    "ofm_toasttitle",
+    "ofm_toastclose",
+    "ofm_toastbody",
+    "ofm_toastactions",
+    "ofm_toasts",
+    "ofm_switch",
+    "ofm_pill"
+  ],
+  "dict": {
+    "sourceLine": 254,
+    "sha256": "2f04bc70fa6db875f6218af3d0211a3ac33c71926e2a9ec1138c1d89ce35564e",
+    "zhKeys": 69,
+    "enKeys": 69,
+    "missingEn": [],
+    "missingZh": []
+  },
+  "css": {
+    "sourceChars": 88952,
+    "keptRules": 162,
+    "keptKeyframes": [
+      "ofm-dot-breathe",
+      "ofm-fadein",
+      "ofm-toast-rise",
+      "ofm-popin",
+      "ofmpagein",
+      "ofmpulse",
+      "ofm-skel-shine",
+      "ofmshine",
+      "ofmscan",
+      "ofm-btn-spin"
+    ],
+    "droppedRules": 320
+  },
+  "ranges": {
+    "icons": {
+      "chars": [
+        366062,
+        408812
+      ],
+      "lines": [
+        4170,
+        4180
+      ],
+      "sha256": "d357932731c437a20e0ff3719a0d3d41bf1a6b23b44ffb21569ab5d2941f62b6",
+      "bytes": 42750
+    },
+    "providers": {
+      "chars": [
+        417038,
+        418659
+      ],
+      "lines": [
+        4190,
+        4205
+      ],
+      "sha256": "b7c59165a7ef4b35825a99ed068943b3224ad1d079974e55e0ff7d3ce2d26a4e",
+      "bytes": 1621
+    },
+    "credits": {
+      "chars": [
+        418704,
+        419185
+      ],
+      "lines": [
+        4207,
+        4222
+      ],
+      "sha256": "260b456a27397369b1e1d0c58a118515f3be3753addcfcdc4c86c46021cc09fc",
+      "bytes": 481
+    },
+    "region": {
+      "chars": [
+        365698,
+        456370
+      ],
+      "lines": [
+        4165,
+        4861
+      ],
+      "sha256": "0bb8c4978060f6ffafabae805250c5cd4d8b9bc17f5b099d3343d7c365c53780",
+      "bytes": 90672
+    }
+  },
+  "helpers": {
+    "kilo": {
+      "chars": [
+        269699,
+        269964
+      ],
+      "lines": [
+        2615,
+        2620
+      ],
+      "sha256": "21d3ac5bd9d819c16c656c4d2598d937440271b1fa284d9a4d348dbfe4dafe6b",
+      "bytes": 265
+    },
+    "ago": {
+      "chars": [
+        269965,
+        270557
+      ],
+      "lines": [
+        2622,
+        2632
+      ],
+      "sha256": "58081973a17960480c4c0d8203605e073a2fb6148b0f2391be3da2468d6c000d",
+      "bytes": 592
+    },
+    "showToast": {
+      "chars": [
+        279664,
+        282006
+      ],
+      "lines": [
+        2835,
+        2888
+      ],
+      "sha256": "7853ef0f6343f5d9485751fcb77969ca8536f9ffd854af46b5c907fe90138c00",
+      "bytes": 2342
+    },
+    "toastHost": {
+      "chars": [
+        279399,
+        279663
+      ],
+      "lines": [
+        2825,
+        2833
+      ],
+      "sha256": "946503e41c74475f8ce10de96f7b8ff0664683cb6225e666ffb4d50e8f147a2f",
+      "bytes": 264
+    },
+    "Switch": {
+      "chars": [
+        283851,
+        284458
+      ],
+      "lines": [
+        2931,
+        2942
+      ],
+      "sha256": "6783b03734177529849b244f0227b07db840fe6c1b4ba090d44b57c1ccae7449",
+      "bytes": 607
+    },
+    "Pill": {
+      "chars": [
+        284459,
+        284669
+      ],
+      "lines": [
+        2944,
+        2946
+      ],
+      "sha256": "15edcb96690a284ad6e5ade5445e5fd4ef91b372cbb59ae0a82f290f650699f0",
+      "bytes": 210
+    }
+  }
+}

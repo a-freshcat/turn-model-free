@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>白嫖模型接入 · 抄写版演示（dsh-our-free-model 2.5.4）</title>
+<link rel="stylesheet" href="./demo.css">
+</head>
+<body>
+<div class="demo-shell">
+  <header class="demo-head">
+    <h1>白嫖模型接入 · 抄写版</h1>
+    <span class="demo-badge" id="build-info"></span>
+    <p>
+      页面代码抄自 <code>dsh-our-free-model</code> 的 <code>client.js</code>（逐字节复制），
+      后端是 <code>src/mock/pack.mjs</code> 的假渠道包：<b>不联网、不登录、不读真实凭据</b>。
+      右侧可以切场景、切语言、看每一次 RPC。
+    </p>
+  </header>
+
+  <main>
+    <section class="control-card" style="margin-bottom:18px">
+      <h2>腾讯 11128 防护实验台（移植自插件的后端防护层）</h2>
+      <p class="demo-note" style="margin:0 0 10px">
+        这一段**不是**抄来的 UI，而是把插件 <code>pack.js</code> 里的防护层原样移植后接成的真实请求管道：
+        发请求 → 上游回 400/11128 → 升一档 → 从原始输入重建 → 重发，最多 2 次。
+        注意路径 <code>C:\work docs DeepSeek Harness\app.js</code> 必须逐字节保留。
+      </p>
+      <div id="guard-lab"></div>
+    </section>
+    <div id="page-root"></div>
+  </main>
+
+  <aside class="demo-side">
+    <section class="control-card">
+      <h2>渠道卡：场景 / 语言 / 主题</h2>
+      <div id="controls"></div>
+    </section>
+    <section class="control-card">
+      <h2>RPC 调用（最新在上）</h2>
+      <div id="rpc-log"></div>
+    </section>
+    <section class="control-card">
+      <h2>说明</h2>
+      <p class="demo-note">
+        上半部分是<b>移植过来的防护层</b>（真实请求管道），下半部分是<b>抄来的渠道卡页面</b>。
+        渠道卡上按钮都是真的：<b>添加账号</b>会用一个假登录链接走两段式登录；
+        <b>一键领取</b>走 <code>credits.claimAll</code>；<b>刷新余额</b>带
+        <code>force:true</code>；展开「账号 / 模型」会真的去拉
+        <code>account.list</code> / <code>model.list</code>。
+      </p>
+      <p class="demo-note" style="margin-top:8px">
+        想对照真插件：<code>~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js</code>
+        第 4165–4861 行就是这一页；防护层源码来自
+        <code>main_repai/our-free-model-codearts/tencent-gate-guard.js</code>。
+        <code>node scripts/extract.mjs --check</code> 与 <code>node scripts/merge-guard.mjs --check</code>
+        可校验两处都没漂移。
+      </p>
+    </section>
+  </aside>
+</div>
+<script src="./demo.js"></script>
+<script>
+  (function () {
+    var demo = window.__OFM_DEMO__
+    demo.page.start(document, demo.React, demo.ReactDOM)
+    demo.guardLab.start(document)
+  })()
+</script>
+</body>
+</html>

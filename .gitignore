@@ -1,0 +1,18 @@
+# 仓库故意包含 node_modules（react / react-dom / scheduler，约 7.5 MB）。
+#
+# 原因：这台机器没有包 registry。若把依赖排除在外，克隆/解压到别处就再也装不回来，
+# 66 条测试跑不起来，"备份"也就失去了可验证的意义。自包含优先于仓库干净。
+#
+# 如果以后有了 registry、想瘦身：
+#   git rm -r --cached node_modules && echo "node_modules/" >> .gitignore && npm install
+
+# 临时预览图（正式截图在 docs/ 下，那些要提交）
+dist/preview.png
+
+# 临时调试目录
+.scratch/
+*.tmp
+
+# 工作区归属标记（属于 DSH 工作区协作，不属于这个仓库）
+.session-id
+
