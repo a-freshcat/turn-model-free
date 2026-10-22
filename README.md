@@ -5,7 +5,7 @@
 
 - 页面来源：`~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js` v2.5.4，第 4165–4861 行（逐字节）
 - 防护来源：`pack.js` v2.5.4（install sha256 `9b6d430a…`），基线在 `vendor/upstream/`
-- 测试：**75 / 75 通过**（防护层 15 + 防漂移 12 + 渲染树对比 7 + 行为 21 + 交付物 9 + 防护演示 5）
+- 测试：**75 / 75 通过**（防护层 15 + 原生 Response 6 + 防漂移 12 + 渲染树对比 7 + 行为 21 + 交付物 9 + 防护演示 5）
 - 演示：双击 `dist/index.html`，不需要服务器、不需要联网
 - 依赖：`npm ci` 一条命令装回（`package-lock.json` 锁版本 + 校验和，实测字节完全一致）
 
