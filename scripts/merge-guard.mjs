@@ -138,10 +138,14 @@ export function bindTencentGateEnv(env) {
 
 `
 
-/** 原文结尾是给审查看的抽取说明（TOOL_RESULT_IMAGE_TEXT 之后），截掉。 */
-const tailMarker = 'var TOOL_RESULT_IMAGE_TEXT'
-const tailIndex = body.indexOf(tailMarker)
-if (tailIndex !== -1) body = body.slice(0, tailIndex).trimEnd() + '\n'
+/**
+ * 不做尾部截断。
+ *
+ * 早先这里截掉了基线的最后一行（`var TOOL_RESULT_IMAGE_TEXT = "…"`），理由是
+ * "它跟防护层无关"。但它属于原文，截掉就让"函数体逐字节保留"这句话不再严格成立，
+ * 审查者按 CHECKLIST 比对时会看到 68 字节的差异，还得自己去解释。
+ * 留着它不增加任何风险（一个未被引用的常量），却让声明可以字面成立。
+ */
 
 /** 导出面：调用方需要的那几个，以及便于测试内部判定的。 */
 const exports = `

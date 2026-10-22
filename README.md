@@ -5,7 +5,7 @@
 
 - 页面来源：`~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js` v2.5.4，第 4165–4861 行（逐字节）
 - 防护来源：`pack.js` v2.5.4（install sha256 `9b6d430a…`），基线在 `vendor/upstream/`
-- 测试：**68 / 68 通过**（防护层 15 + 防漂移 11 + 渲染树对比 7 + 行为 20 + 交付物 9 + 防护演示 5 + 其他）
+- 测试：**68 / 68 通过**（防护层 15 + 防漂移 12 + 渲染树对比 7 + 行为 20 + 交付物 9 + 防护演示 5 + 其他）
 - 演示：双击 `dist/index.html`，不需要服务器、不需要联网
 - 依赖：`npm ci` 一条命令装回（`package-lock.json` 锁版本 + 校验和，实测字节完全一致）
 
@@ -16,7 +16,7 @@
 ```bash
 git clone https://github.com/a-freshcat/free-m-clone.git
 cd free-m-clone
-node scripts/test-all.mjs     # 首次会自动 npm ci 装依赖，然后跑 68 条测试
+node scripts/test-all.mjs     # 首次会自动 npm ci 装依赖，然后跑 69 条测试
 ```
 
 仓库**不包含** `node_modules`（那是第三方代码，不该塞进私有仓库）。
@@ -74,7 +74,7 @@ node scripts/test-all.mjs
 
 | 命令 | 说明 |
 |---|---|
-| `npm test` | 构建 + 跑全部 68 条测试 |
+| `npm test` | 构建 + 跑全部 69 条测试 |
 | `npm run check:drift` | 三处来源是否都没漂移（不一致退出码 1） |
 | `npm run verify` | 构建 + 防漂移 + 全部测试 |
 | `npm run extract` | 插件升级后重新抄页面 + 主题令牌 |

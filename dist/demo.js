@@ -2386,6 +2386,7 @@ function tgTrace(event, fields) {
     // 埋点失败不影响请求
   }
 }
+var TOOL_RESULT_IMAGE_TEXT = "Attached image(s) from tool result:";
 
 /* ── 导出 ─────────────────────────────────────────────────────────────── */
 

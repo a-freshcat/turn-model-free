@@ -290,5 +290,40 @@ export default {
         assert.includes(provenance.upstreamOrigin ?? '', 'pack.js', '记录了上游来源是 pack.js')
       },
     },
+    {
+      name: '函数体逐字节：合并产物与基线的函数区完全一致（只有绑定与导出是新增的）',
+      async run({ assert, readFile }) {
+        const baseline = readFile('vendor/upstream/tencent-gate-guard.js')
+        const merged = readFile('src/guard/tencent-gate.js')
+        // 两边从 `var TG_ZW` 起是函数区；合并产物的函数区之后才是导出块
+        const cut = text => {
+          const start = text.indexOf('var TG_ZW')
+          assert.ok(start > -1, '找到函数区起点 var TG_ZW')
+          return text.slice(start)
+        }
+        const baselineBody = cut(baseline).trimEnd()
+        const mergedRegion = cut(merged)
+        const exportAt = mergedRegion.indexOf('/* ── 导出')
+        assert.ok(exportAt > -1, '合并产物有导出块标记')
+        const mergedBody = mergedRegion.slice(0, exportAt).trimEnd()
+
+        // 这条断言是这份清单的核心：它不允许"顺手改一下函数体"。
+        // 早先这里差 68 字节（我截掉了基线末尾一个未引用的常量），
+        // 那种差异会让"逐字节"这句话不成立，于是改成保留原文。
+        assert.equal(
+          mergedBody.length,
+          baselineBody.length,
+          '函数区长度一致（不一致说明有增删）',
+        )
+        assert.equal(mergedBody, baselineBody, '函数区内容逐字节一致')
+
+        // 差异只应出现在函数区之外：模块头的三个绑定 + 导出块
+        const head = merged.slice(0, merged.indexOf('var TG_ZW'))
+        for (const name of ['readFileSync', 'homedir', 'join']) {
+          assert.includes(head, `let ${name}`, `头部把 ${name} 声明为可绑定`)
+        }
+        assert.includes(head, 'export function bindTencentGateEnv', '头部有绑定入口')
+      },
+    },
   ],
 }
