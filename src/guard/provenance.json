@@ -1,5 +1,6 @@
 {
-  "source": "main_repai/our-free-model-codearts/tencent-gate-guard.js",
+  "source": "vendor/upstream/tencent-gate-guard.js",
+  "upstreamOrigin": "dsh-our-free-model@2.5.4 vendor/channel-pack/pack.js（抽取件）",
   "sourceSha256": "dfb86be77bcf451b6fa4629d5591bcf80903b3cda82018736b4d66e6d625baed",
   "sourceBytes": 19679,
   "mergedBytes": 21263,

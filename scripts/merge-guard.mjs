@@ -29,12 +29,25 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
 const WORKSPACE = resolve(ROOT, '..')
 
+/**
+ * 防护层的源。
+ *
+ * 优先级：环境变量 → **仓库内基线**（vendor/upstream/）→ 工作区里的原始抽取件。
+ *
+ * 仓库内基线是必须的：只看 `main_repai/` 那份的话，这个仓库一旦被别人克隆、
+ * 或者 `main_repai/` 被清理，`merge-guard` 就跑不了，"防护层有没有被改过"
+ * 也就无从复核。基线随仓库走，`src/guard/provenance.json` 里记着它的 sha256。
+ */
+const VENDORED = join(ROOT, 'vendor/upstream/tencent-gate-guard.js')
+const UPSTREAM = join(WORKSPACE, 'main_repai/our-free-model-codearts/tencent-gate-guard.js')
+
 const SOURCE = process.env.OFM_GUARD_SOURCE
-  ?? join(WORKSPACE, 'main_repai/our-free-model-codearts/tencent-gate-guard.js')
+  ?? (existsSync(VENDORED) ? VENDORED : UPSTREAM)
 const CHECK = process.argv.includes('--check')
 
 if (!existsSync(SOURCE)) {
   console.error(`merge-guard: 找不到防护层源码: ${SOURCE}`)
+  console.error('仓库里应有 vendor/upstream/tencent-gate-guard.js；也可以设 OFM_GUARD_SOURCE=<path>。')
   process.exit(2)
 }
 
@@ -181,7 +194,9 @@ const previous = existsSync(path) ? readFileSync(path, 'utf8') : null
  * 这份记录存在的意义就是让「到底动了什么」可核对。
  */
 const provenance = {
-  source: 'main_repai/our-free-model-codearts/tencent-gate-guard.js',
+  // 记录**实际用到的**那份源：仓库内基线时写相对路径，便于在别处复核
+  source: SOURCE === VENDORED ? 'vendor/upstream/tencent-gate-guard.js' : 'main_repai/our-free-model-codearts/tencent-gate-guard.js',
+  upstreamOrigin: 'dsh-our-free-model@2.5.4 vendor/channel-pack/pack.js（抽取件）',
   sourceSha256: sourceSha,
   sourceBytes: raw.length,
   mergedBytes: output.length,

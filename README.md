@@ -4,12 +4,24 @@
 一并移植进来、接成可运行的请求管道**。
 
 - 页面来源：`~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js` v2.5.4，第 4165–4861 行（逐字节）
-- 防护来源：`pack.js` v2.5.4（install sha256 `9b6d430a…`），从 `main_repai/.../tencent-gate-guard.js` 移植
-- 测试：**66 / 66 通过**（防护层 15 + 防漂移 9 + 渲染树对比 7 + 行为 20 + 交付物 9 + 防护演示 5 + 其他）
+- 防护来源：`pack.js` v2.5.4（install sha256 `9b6d430a…`），基线在 `vendor/upstream/`
+- 测试：**68 / 68 通过**（防护层 15 + 防漂移 11 + 渲染树对比 7 + 行为 20 + 交付物 9 + 防护演示 5 + 其他）
 - 演示：双击 `dist/index.html`，不需要服务器、不需要联网
-- 打包：`free-m-clone.zip` 解压到任何位置都能直接跑（见 [REPORT.md](REPORT.md) 第五节）
+- 依赖：`npm ci` 一条命令装回（`package-lock.json` 锁版本 + 校验和，实测字节完全一致）
 
 完整报告见 [REPORT.md](REPORT.md)。
+
+## 克隆下来怎么跑
+
+```bash
+git clone https://github.com/a-freshcat/free-m-clone.git
+cd free-m-clone
+node scripts/test-all.mjs     # 首次会自动 npm ci 装依赖，然后跑 68 条测试
+```
+
+仓库**不包含** `node_modules`（那是第三方代码，不该塞进私有仓库）。
+`node scripts/test-all.mjs` 会检测到缺依赖并自动 `npm ci`；也可以手动先装。
+
 
 ## 30 秒上手
 
@@ -55,16 +67,18 @@ node scripts/test-all.mjs
 | `src/test/` | 六套测试 + 迷你运行器 |
 | `dist/` | 构建产物：`index.html` + `demo.js` + `demo.css` |
 | `scripts/` | `extract` / `extract-theme` / `merge-guard` / `build-demo` / `test-all` |
+| `vendor/upstream/` | 防护层基线（从 pack.js 抽取的源），让本仓库能独立复核防护层有没有被改 |
+| `package-lock.json` | 依赖版本 + integrity 校验和，`npm ci` 据此还原 |
 
 ## 命令
 
 | 命令 | 说明 |
 |---|---|
-| `npm test` | 构建 + 跑全部 66 条测试 |
+| `npm test` | 构建 + 跑全部 68 条测试 |
 | `npm run check:drift` | 三处来源是否都没漂移（不一致退出码 1） |
 | `npm run verify` | 构建 + 防漂移 + 全部测试 |
 | `npm run extract` | 插件升级后重新抄页面 + 主题令牌 |
-| `npm run extract:guard` | 插件升级后重新移植防护层 |
+| `npm run extract:guard` | 插件升级后重新移植防护层（读 `vendor/upstream/` 基线） |
 | `npm run demo` | 重新构建演示页 |
 | `npm run test:guard` | 只跑防护层测试 |
 | `npm run test:parity` | 只跑渲染树对比 |
@@ -104,5 +118,15 @@ node scripts/test-all.mjs
 
 ## 依赖
 
-`react` / `react-dom` / `scheduler` 19.2.3，已 vendored 进 `node_modules/`。
-**打包时请带上它**：这台机器没有包 registry，删掉无法还原。只想要演示页的话，单拷 `dist/` 即可。
+`react` / `react-dom` / `scheduler` 19.2.3，由 `package-lock.json` 锁定（含 integrity 校验和）。
+
+```bash
+npm ci     # 严格按 lock 还原；实测 85 个文件哈希与最初那份完全一致，约 2 秒
+```
+
+早先这台机器 curl 测 registry 返回 exit 35，我据此以为必须把 `node_modules` 提交进仓库；
+后来用 PowerShell 复测发现 registry 是通的（curl 那次是 TLS 问题，不是断网），
+于是改成标准做法：**仓库不存依赖，靠 lock 文件还原**。
+
+只想要演示页的话，单拷 `dist/` 即可 —— 它自包含，不需要任何依赖。
+

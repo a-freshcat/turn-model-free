@@ -232,8 +232,62 @@ export default {
         // and the bundle must not hard-code this checkout's location
         const bundle = readFile('dist/demo.js').replace(/\\/g, '/')
         assert.notIncludes(bundle, process.cwd().replace(/\\/g, '/'), 'bundle has no absolute checkout path')
-        // node_modules is what the tests need; the demo itself needs nothing but dist/
-        assert.ok(existsSync(join(process.cwd(), 'node_modules', 'react', 'package.json')), 'react is vendored in')
+        // 演示页自包含：只需要 dist/，不需要 node_modules
+        assert.ok(existsSync(join(process.cwd(), 'dist', 'demo.js')), 'demo bundle exists')
+      },
+    },
+    {
+      name: '依赖可复现：lock 文件锁死版本 + 校验和，仓库不提交 node_modules',
+      async run({ assert, readFile }) {
+        // 依赖曾经被塞进仓库（因为没有 registry），后来证实 registry 是通的，
+        // 于是改成 lock + npm ci。这条测试守住"可复现"这件事。
+        const lock = JSON.parse(readFile('package-lock.json'))
+        assert.ok(lock.lockfileVersion >= 2, `lockfileVersion（${lock.lockfileVersion}）`)
+        const pinned = {
+          'node_modules/react': '19.2.3',
+          'node_modules/react-dom': '19.2.3',
+          'node_modules/scheduler': '0.27.0',
+        }
+        for (const [name, version] of Object.entries(pinned)) {
+          const entry = lock.packages?.[name]
+          assert.ok(entry !== undefined, `lock 里有 ${name}`)
+          assert.equal(entry.version, version, `${name} 版本`)
+          assert.match(entry.integrity ?? '', /^sha512-/, `${name} 有 integrity 校验和`)
+        }
+        // package.json 与 lock 不能各说各话
+        const pkg = JSON.parse(readFile('package.json'))
+        for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
+          assert.equal(lock.packages[`node_modules/${name}`]?.version, version, `${name} 的 lock 与 package.json 一致`)
+        }
+        // node_modules 不进版本库
+        assert.includes(readFile('.gitignore'), 'node_modules/', '.gitignore 排除了 node_modules')
+      },
+    },
+    {
+      name: '可独立复核：防护层基线随仓库走，不依赖工作区外部目录',
+      async run({ assert, readFile }) {
+        // merge-guard 曾经只能从 ../main_repai/ 取源，克隆到别处就跑不了，
+        // "防护层有没有被改"也就无从复核。基线现在 vendored 进仓库。
+        const baselinePath = 'vendor/upstream/tencent-gate-guard.js'
+        assert.ok(existsSync(join(process.cwd(), baselinePath)), `${baselinePath} 在仓库里`)
+
+        const baseline = readFile(baselinePath)
+        const provenance = JSON.parse(readFile('src/guard/provenance.json'))
+        // provenance 记录的就是这份基线，且 sha 对得上
+        assert.equal(provenance.source, baselinePath, 'provenance 指向仓库内基线')
+        assert.equal(
+          hash(baseline),
+          provenance.sourceSha256,
+          '基线 sha256 与 provenance 一致（基线没被换过）',
+        )
+        // 基线本身确实是那个版本插件的抽取件
+        assert.includes(baseline, 'TENCENT_GATE_RULES', '基线含规则表')
+        assert.includes(baseline, 'TG_GATE_ERRORS', '基线含 WeakSet 登记表')
+        assert.includes(baseline, 'ofm-tencent-gate', '基线含取证埋点前缀')
+        // 合并产物记录了它是从哪来的
+        const merged = readFile('src/guard/tencent-gate.js')
+        assert.includes(merged, provenance.sourceSha256, '合并产物头部记录了源 sha256')
+        assert.includes(provenance.upstreamOrigin ?? '', 'pack.js', '记录了上游来源是 pack.js')
       },
     },
   ],
