@@ -16,6 +16,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFiles } from '../src/test/run.mjs'
@@ -24,7 +25,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
 const args = process.argv.slice(2)
 
-function run(script, extra = []) {
+function run(script, extra = [], options = {}) {
   const result = spawnSync(process.execPath, [join(ROOT, script), ...extra], { cwd: ROOT, stdio: 'inherit' })
   if (result.error !== undefined) {
     console.error(`could not start ${script}: ${result.error.message}`)
@@ -34,13 +35,36 @@ function run(script, extra = []) {
     console.error(`\n${script} failed (exit ${result.status})`)
     process.exit(result.status ?? 1)
   }
+  void options
 }
+
+/**
+ * 依赖不在仓库里（见 .gitignore），所以干净检出后第一步是装。
+ *
+ * 用 `npm ci` 而不是 `npm install`：lock 文件里有 integrity 校验和，装出来的
+ * 是逐字节相同的那一份（实测 85 个文件哈希全等）。
+ */
+function ensureDependencies() {
+  const marker = join(ROOT, 'node_modules', 'react', 'package.json')
+  if (existsSync(marker)) return
+  console.log('node_modules 不存在，按 package-lock.json 安装依赖…')
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  const result = spawnSync(npm, ['ci', '--no-audit', '--no-fund'], { cwd: ROOT, stdio: 'inherit', shell: process.platform === 'win32' })
+  if (result.error !== undefined || result.status !== 0) {
+    console.error('\n依赖安装失败。请手动执行：npm ci')
+    console.error('（测试需要 react / react-dom / scheduler，版本与校验和都在 package-lock.json 里）')
+    process.exit(1)
+  }
+}
+
+ensureDependencies()
 
 if (!args.includes('--no-build')) run('scripts/build-demo.mjs')
 
 if (args.includes('--with-drift')) {
   run('scripts/extract.mjs', ['--check'])
   run('scripts/extract-theme.mjs', ['--check'])
+  run('scripts/merge-guard.mjs', ['--check'])
 }
 
 const suites = [

@@ -1,10 +1,15 @@
-# 仓库故意包含 node_modules（react / react-dom / scheduler，约 7.5 MB）。
+# 依赖不提交进仓库。`package-lock.json` 锁定了版本 + integrity 校验和，
+# 一条 `npm ci` 就能装回**逐字节相同**的 react / react-dom / scheduler
+# （实测 85 个文件哈希全等，约 2 秒）。
 #
-# 原因：这台机器没有包 registry。若把依赖排除在外，克隆/解压到别处就再也装不回来，
-# 66 条测试跑不起来，"备份"也就失去了可验证的意义。自包含优先于仓库干净。
+# 早先这台机器 curl 测 registry 失败，我据此以为必须把依赖塞进仓库；后来用
+# PowerShell 复测发现 registry 是通的（curl 那次的 exit 35 是 TLS 问题，不是
+# 断网）。所以那条限制并不存在，仓库保持干净即可。
 #
-# 如果以后有了 registry、想瘦身：
-#   git rm -r --cached node_modules && echo "node_modules/" >> .gitignore && npm install
+# 装依赖：
+#   npm ci        # 严格按 lock 安装（推荐，可复现）
+#   npm install   # 没有 lock 或要升级时才用
+node_modules/
 
 # 临时预览图（正式截图在 docs/ 下，那些要提交）
 dist/preview.png
@@ -15,4 +20,3 @@ dist/preview.png
 
 # 工作区归属标记（属于 DSH 工作区协作，不属于这个仓库）
 .session-id
-
