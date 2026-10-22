@@ -12,6 +12,7 @@
     "check:demo": "node scripts/build-demo.mjs --check",
     "test": "node scripts/test-all.mjs",
     "test:guard": "node src/test/run.mjs src/test/guard.test.mjs",
+    "test:native": "node src/test/run.mjs src/test/native-response.test.mjs",
     "test:guard-demo": "node src/test/run.mjs src/test/guard-demo.test.mjs",
     "test:parity": "node src/test/run.mjs src/test/parity.test.mjs",
     "test:behaviour": "node src/test/run.mjs src/test/behaviour.test.mjs",

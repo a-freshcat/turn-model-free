@@ -5,7 +5,7 @@
 
 - 页面来源：`~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js` v2.5.4，第 4165–4861 行（逐字节）
 - 防护来源：`pack.js` v2.5.4（install sha256 `9b6d430a…`），基线在 `vendor/upstream/`
-- 测试：**68 / 68 通过**（防护层 15 + 防漂移 12 + 渲染树对比 7 + 行为 20 + 交付物 9 + 防护演示 5 + 其他）
+- 测试：**75 / 75 通过**（防护层 15 + 防漂移 12 + 渲染树对比 7 + 行为 21 + 交付物 9 + 防护演示 5）
 - 演示：双击 `dist/index.html`，不需要服务器、不需要联网
 - 依赖：`npm ci` 一条命令装回（`package-lock.json` 锁版本 + 校验和，实测字节完全一致）
 
@@ -16,7 +16,7 @@
 ```bash
 git clone https://github.com/a-freshcat/free-m-clone.git
 cd free-m-clone
-node scripts/test-all.mjs     # 首次会自动 npm ci 装依赖，然后跑 69 条测试
+node scripts/test-all.mjs     # 首次会自动 npm ci 装依赖，然后跑 75 条测试
 ```
 
 仓库**不包含** `node_modules`（那是第三方代码，不该塞进私有仓库）。
@@ -46,7 +46,7 @@ node scripts/test-all.mjs
 |---|---|
 | `src/extracted/channels-page.js` | 页面全部代码，**原文**（13 渠道 / 图标 / 登录轮询 / 余额 / 模型开关） |
 | `src/extracted/channels.css` | 162 条规则 + 10 组动画，按原文格式 |
-| `src/extracted/channels-dict.js` | 69 条 `chan.*` 中文 + 69 条英文 |
+| `src/extracted/channels-dict.js` | 75 条 `chan.*` 中文 + 75 条英文 |
 | `src/extracted/theme-tokens.css` | 从桌面端 `app.asar` 取出的 627 个设计令牌 |
 
 ### 2. 移植的防护层（后端）
@@ -74,7 +74,7 @@ node scripts/test-all.mjs
 
 | 命令 | 说明 |
 |---|---|
-| `npm test` | 构建 + 跑全部 69 条测试 |
+| `npm test` | 构建 + 跑全部 75 条测试 |
 | `npm run check:drift` | 三处来源是否都没漂移（不一致退出码 1） |
 | `npm run verify` | 构建 + 防漂移 + 全部测试 |
 | `npm run extract` | 插件升级后重新抄页面 + 主题令牌 |

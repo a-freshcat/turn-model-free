@@ -54,20 +54,63 @@ export class ChannelGateError extends Error {
  * 本身就会遍历 system / assistant 并处理字符串与文本块两种形状，重复处理
  * 会让已经变成 `DSH` 的文本再被当成待洗内容（实测会二次改写）。
  *
+ * 拷贝必须保留**全部字段**，不能只挑 role/content：带工具调用的对话里，
+ * `tool_calls` / `tool_call_id` / `name` 一旦丢失，调用与结果就断了关联，
+ * 真实接入时会出现参数错误或上下文缺失。这里改成一字段不丢的浅拷贝。
+ *
  * @param {Array<{role: string, content: unknown}>} messages
  * @param {number} level
  */
 export function scrubForLevel(messages, level) {
-  const wire = messages.map(message => ({
-    role: message.role,
-    content: typeof message.content === 'string'
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content.map(part => (part?.type === 'text' ? { ...part } : part))
-        : message.content,
-  }))
+  const wire = messages.map(message => {
+    const copy = { ...message }
+    if (Array.isArray(message.content)) {
+      // 文本块要能就地改写，因此单独复制一层；非文本块原样保留
+      copy.content = message.content.map(part => (part?.type === 'text' ? { ...part } : part))
+    }
+    return copy
+  })
   applyTencentGateGuard(wire, level)
   return wire
+}
+
+/**
+ * 读响应正文，**且只读一次**。
+ *
+ * 原生 Fetch 的 `Response` body 只能消费一次：第二次 `text()` 会得到
+ * "Body is unusable: Body has already been read"。原实现先读一次判断是否
+ * 升档、再读一次判断是否抛错，第二次必然失败，被 `.catch(() => '')` 吞成空串，
+ * 于是「持续 11128」不会抛结构化错误，「普通 400」的调用方也读不到错误详情。
+ *
+ * 现在的做法：读一次，把结果缓存在响应对象的私有记号上；同一个响应再次需要
+ * 正文时直接返回缓存。调用方拿到的仍是原响应对象，但**仍能读到正文**——
+ * 因为我们在读取时已经把它存下来了，并给它装了一个可重复调用的 `text()`。
+ */
+const BODY_CACHE = Symbol('tencentGateBodyCache')
+
+async function readBodyOnce(response) {
+  if (response === null || typeof response !== 'object') return ''
+  const cached = response[BODY_CACHE]
+  if (cached !== undefined) return cached
+  let body = ''
+  try {
+    body = typeof response.text === 'function' ? await response.text() : ''
+  } catch {
+    // 真的读不出来（例如调用方已经消费过）时才落到空串，并如实记录
+    body = ''
+  }
+  try {
+    Object.defineProperty(response, BODY_CACHE, { value: body, enumerable: false, configurable: true })
+    // 让调用方之后仍能 `await response.text()` 拿到同一份正文
+    if (typeof response.text === 'function') {
+      Object.defineProperty(response, 'text', {
+        value: async () => body, enumerable: false, configurable: true, writable: true,
+      })
+    }
+  } catch {
+    // 响应对象被冻结之类：缓存失败不影响本次结果，只是调用方可能读不到正文
+  }
+  return body
 }
 
 /**
@@ -88,7 +131,8 @@ export async function requestWithTencentGate(options) {
 
   /** 与 pack.js 一致：每档都从**原始输入**重建，不在已改文本上叠加。 */
   const buildMessages = level => {
-    const base = messages.map(message => ({ role: message.role, content: message.content }))
+    // 保留消息的全部字段（tool_calls / tool_call_id / name …），只换 content
+    const base = messages.map(message => ({ ...message }))
     if (typeof system === 'string' && system.length > 0) {
       base.unshift({ role: 'system', content: system })
     }
@@ -111,7 +155,8 @@ export async function requestWithTencentGate(options) {
   // ── HTTP 400 + 11128：升档重发（预算与 SSE 共享，这里只有 HTTP 一条路）
   for (;;) {
     if (!(guarded && !response.ok && response.status === 400)) break
-    const probeBody = await response.text().catch(() => '')
+    // 只读一次并缓存：原生 Response 的 body 不可重复消费
+    const probeBody = await readBodyOnce(response)
     if (!isTencentGateBlock(probeBody)) break
     if (escalations >= TENCENT_GATE_MAX_ESCALATIONS) break
     const next = tencentNextGuardLevel(level)
@@ -126,7 +171,8 @@ export async function requestWithTencentGate(options) {
 
   // ── 升档耗尽仍被拒：结构化抛错（不靠 error 自定义属性）
   if (guarded && !response.ok && response.status === 400) {
-    const gateBody = await response.text().catch(() => '')
+    // 同一个响应可能已经在上面的探测里读过；这里拿缓存，不再消费 body
+    const gateBody = await readBodyOnce(response)
     if (isTencentGateBlock(gateBody)) {
       tgTrace('result', { id: traceId, result: 'blocked', sends, escalations, finalLevel: level, ms: Date.now() - startedAt })
       throw markTencentGateError(

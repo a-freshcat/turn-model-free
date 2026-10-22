@@ -33,11 +33,11 @@ git status --porcelain      # 期望：无输出（工作区干净）
 node scripts/test-all.mjs --with-drift
 ```
 
-**期望**：末尾 `PASS 69/69`，退出码 0。
+**期望**：末尾 `PASS 75/75`，退出码 0。
 
 | 现象 | 说明什么 |
 |---|---|
-| `PASS 69/69` | 一切正常，继续看 §2–§5 的细项 |
+| `PASS 75/75` | 一切正常，继续看 §2–§5 的细项 |
 | `node_modules 不存在，按 package-lock.json 安装依赖…` 后失败 | 网络不通或 lock 损坏；见 §4 |
 | 某套失败 | 按套件名定位到 §3 对应小节 |
 | `--check: ... differs` | 有生成物与来源不一致，见 §2.2 |
@@ -95,7 +95,7 @@ node scripts/merge-guard.mjs --check
 | 字段 | 值 |
 |---|---|
 | 基线 `vendor/upstream/tencent-gate-guard.js` sha256 | `dfb86be77bcf451b6fa4629d5591bcf80903b3cda82018736b4d66e6d625baed` |
-| 合并产物 `src/guard/tencent-gate.js` sha256 | `959e4641f0264d441bd2d6c038b82392326fa8c51f0318d46e4b8522caf8b28e` |
+| 合并产物 `src/guard/tencent-gate.js` sha256 | `4d4ea38503b6fe7fbcc2eae126f3ac2219a94e62501512822f581e122d3ed4c6` |
 | 上游安装文件 `pack.js` sha256（记录用） | `9b6d430a51bd047534bba4608024a5e571e277fa8b9534cb143f0db119b544cc` |
 | 规则数 | `10` |
 | 升档预算默认 | `2` |
@@ -114,8 +114,8 @@ const merged=fs.readFileSync('src/guard/tencent-gate.js','utf8');
 const cut=s=>s.slice(s.indexOf('var TG_ZW'));
 const a=cut(base).trimEnd();
 const bAll=cut(merged), b=bAll.slice(0, bAll.indexOf('/* ── 导出')).trimEnd();
-console.log('基线函数区:', a.length, '字节');
-console.log('合并函数区:', b.length, '字节');
+console.log('基线函数区:', a.length, '字符 /', Buffer.byteLength(a,'utf8'), 'UTF-8 字节');
+console.log('合并函数区:', b.length, '字符 /', Buffer.byteLength(b,'utf8'), 'UTF-8 字节');
 console.log('逐字节完全一致:', a === b);
 if (a !== b) { let i=0; while(i<a.length&&i<b.length&&a[i]===b[i])i++;
   console.log('首个差异 @'+i); console.log('  基线:', JSON.stringify(a.slice(i-40,i+80)));
@@ -123,7 +123,7 @@ if (a !== b) { let i=0; while(i<a.length&&i<b.length&&a[i]===b[i])i++;
 "
 ```
 
-**期望**：`逐字节完全一致: true`，两边都是 **19497 字节**。
+**期望**：`逐字节完全一致: true`，两边都是 **19497 个字符 / 25289 UTF-8 字节**。
 这条已被 `src/test/provenance.test.mjs` 的「函数体逐字节」用例固化（断言长度与内容全等）。
 
 函数区之外的差异**只应有两处**，请核对：
@@ -262,7 +262,7 @@ node scripts/test-all.mjs      # 不手动装任何依赖
 ```
 
 **期望**：先打印 `node_modules 不存在，按 package-lock.json 安装依赖…`，
-然后 `added 3 packages`，最后 `PASS 69/69`，**且没有 `DEP0190` 之类的告警**。
+然后 `added 3 packages`，最后 `PASS 75/75`，**且没有 `DEP0190` 之类的告警**。
 
 > Windows 上这里曾经踩两个坑：Node 20+ 不允许直接 spawn `.cmd`（EINVAL），
 > 必须走 shell；而 `shell:true` + args 数组又会触发 DEP0190。
@@ -289,7 +289,7 @@ for (const f of ['src/extracted/channels-page.js','src/extracted/provenance.json
 
 ```bash
 # 只把 dist/ 复制到别处，双击 index.html，或：
-ls dist/     # 期望：demo.css demo.js index.html preview.png
+ls dist/     # 期望：demo.css demo.js index.html（截图在 docs/ 下）
 ```
 
 **期望**：在浏览器里打开，13 张渠道卡 + 防护实验台都正常，**不需要** `node_modules`、
@@ -358,6 +358,25 @@ console.log('不可见字符出现次数:', codes.length);
 5. **`scripts/verify-pack.mjs` 只能在本机跑**
    它校验的是**已安装**的 `pack.js`（可通过 `OFM_PACK_INSTALLED` 指定）。没装插件时无意义。
 
+### 6.1 已经修掉的缺陷（由外部审查发现，留作参照）
+
+这些不是"局限"，是**真实缺陷**，已修复并有回归测试。列出来是为了让下一个审查者
+知道它们存在过，以及现在的防线在哪：
+
+| 缺陷 | 后果 | 现在由什么守住 |
+|---|---|---|
+| 管道对同一个响应调了两次 `response.text()` | 原生 `Response` 的 body 只能读一次，第二次失败被 `.catch(() => '')` 吞成空串 → **持续 11128 不抛错**、普通 400 的调用方读不到错误详情 | `readBodyOnce()` 只读一次并缓存，并给响应装回可重复调用的 `text()`；`src/test/native-response.test.mjs` 用**原生 Response** 断言 |
+| 重建消息时只保留 `role`/`content` | `tool_calls` / `tool_call_id` / `name` 丢失，工具调用与结果断开关联 | `scrubForLevel()` 改为整条消息浅拷贝；同名测试断言 5 个字段都在 |
+| 非 Windows 首次安装依赖传命令字符串且 `shell:false` | 参数不拆分，报 `ENOENT` | `test-all.mjs` 分平台：Windows 走 `shell:true` + 命令串，其它平台走 `npm` + 参数数组 |
+
+> **这三条的教训是同一条**：假对象替真实依赖补了它不提供的属性，就掩盖了真实缺陷。
+> 第一、二条原本被 `{ text: async () => … }` 这种可重复读取的假响应掩盖；
+> 第三条被"只在 Windows 上测过"掩盖。
+> 同类检查请优先怀疑 **mock 是否比真实对象更宽容**。
+>
+> 还有一条自查方式：把 `src/guard/pipeline.mjs` 换回修复前的版本再跑
+> `native-response.test.mjs`，应当是 **4 条失败**。如果全绿，说明测试是空断言。
+
 ---
 
 ## 7. 快速核对表（勾选式）
@@ -365,7 +384,7 @@ console.log('不可见字符出现次数:', codes.length);
 | # | 检查 | 命令 | 期望 |
 |---|---|---|---|
 | 1 | 工作区干净 | `git status --porcelain` | 无输出 |
-| 2 | 全套测试 | `node scripts/test-all.mjs --with-drift` | `PASS 69/69`，exit 0 |
+| 2 | 全套测试 | `node scripts/test-all.mjs --with-drift` | `PASS 75/75`，exit 0 |
 | 3 | 页面未漂移 | `node scripts/extract.mjs --check` | exit 0 |
 | 4 | 防护层未漂移 | `node scripts/merge-guard.mjs --check` | exit 0 |
 | 5 | 令牌未漂移 | `node scripts/extract-theme.mjs --check` | exit 0 |
@@ -375,9 +394,10 @@ console.log('不可见字符出现次数:', codes.length);
 | 9 | 页面交互 | `node src/test/run.mjs src/test/behaviour.test.mjs` | `21/21` |
 | 10 | 交付物冒烟 | `node src/test/run.mjs src/test/demo.test.mjs` | `9/9` |
 | 11 | 防漂移自查 | `node src/test/run.mjs src/test/provenance.test.mjs` | `12/12` |
-| 12 | 依赖不入库 | `git ls-files \| grep -c node_modules` | `0` |
-| 13 | 无凭据 | `git grep -E "ghp_\|sk-[A-Za-z0-9]{32}"` | 无匹配 |
-| 14 | 干净克隆可跑 | 新 clone 后直接 `node scripts/test-all.mjs` | 自动装依赖后 `69/69` |
+| 12 | **原生 Response 回归** | `node src/test/run.mjs src/test/native-response.test.mjs` | `6/6` |
+| 13 | 依赖不入库 | `git ls-files \| grep -c node_modules` | `0` |
+| 14 | 无凭据 | `git grep -E "ghp_\|sk-[A-Za-z0-9]{32}"` | 无匹配 |
+| 15 | 干净克隆可跑 | 新 clone 后直接 `node scripts/test-all.mjs` | 自动装依赖后 `75/75` |
 
 **如果你发现任何一条与上表不符，那就是真问题，请直接指出命令与输出。**
 **如果你发现上表"期望值"本身写错了（例如某条测试其实是空断言），那更有价值——请说明理由。**

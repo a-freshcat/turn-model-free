@@ -4,7 +4,7 @@
 > 然后用测试证明抄出来的东西和原插件长得一样、点得动、不漂移。
 >
 > 结论先说：**能用了**。页面代码是逐字节抄的（不是重写），和已安装插件在同一 DOM / 同一 React /
-> 同一份假后端下渲染出的树**逐行相同**；46 条测试全绿；浏览器里真实截图见下。
+> 同一份假后端下渲染出的树**逐行相同**；当前版本 75 条测试全绿；历史截图保留在 docs/ 下。
 > 打成 zip 搬到别处解压后仍然通过（含防漂移检查），验证记录见第六节。
 
 | 项 | 值 |
@@ -12,7 +12,7 @@
 | 抄写来源 | `~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js`（插件 v2.5.4） |
 | 源码指纹 | sha256 `d5b22d78d2a76fd94bd828a77c3224d4318ca8e2abb5a7dd6aab3f3bf20cdb85` |
 | 抄哪一段 | 第 4165–4861 行（`// ── 白嫖模型接入页` 到 `// ── 数据看板` 之前），90 672 字符 |
-| 测试 | `npm test` → **46 / 46 通过**（~15 s） |
+| 测试 | `npm test` → **75 / 75 通过**（最近一次完整验证） |
 | 演示页 | 双击 `dist/index.html` 即可，无需服务器、无需联网 |
 
 ---
@@ -26,7 +26,7 @@
 |---|---|---|
 | `src/extracted/channels-page.js` | 整个页面：`ChannelsPage`、`ChannelCard`、13 张渠道卡的定义、渠道图标（base64 PNG）、RPC 传输层、登录轮询、余额/领取/模型开关全部逻辑 | client.js **4165–4861 行逐字节** |
 | `src/extracted/channels.css` | 162 条样式规则（页面用到的全 55 个类名）+ 10 个动画 `@keyframes` + 它们所在的 `@media` | client.js 的 `CSS` 模板串，**按原文格式**摘出 |
-| `src/extracted/channels-dict.js` | 69 条 `chan.*` 中文 + 69 条英文词条 | client.js 的 `DICT.zh` / `DICT.en` |
+| `src/extracted/channels-dict.js` | 75 条 `chan.*` 中文 + 75 条英文词条 | client.js 的 `DICT.zh` / `DICT.en` |
 | `src/extracted/theme-tokens.css` | 428 个浅色 + 199 个深色设计令牌（`--dsw-alias-*`） | 桌面端 `app.asar` 里 `dsh-client-ui-theme` |
 | `src/extracted/provenance.json` | 每一段的字符区间、行号、sha256 | 抽取时算出 |
 
@@ -147,7 +147,7 @@ free-m-clone/
 ├─ src/app/page.mjs        # 依赖注入装配（t 绑定、post、计时器）
 ├─ src/mock/pack.mjs       # 假渠道包：13 家渠道的 RPC 语义
 ├─ src/runtime/mini-dom.mjs# 够用的迷你 DOM
-├─ src/test/               # 四套测试 + 迷你运行器
+├─ src/test/               # 六套测试 + 迷你运行器
 ├─ src/demo/               # 演示页外壳（内容仍是抄来的页面）
 ├─ dist/                   # 双击 index.html 即可（无需服务器/联网）
 ├─ scripts/                # extract / extract-theme / build-demo / test-all
@@ -155,7 +155,7 @@ free-m-clone/
 ```
 
 ```bash
-npm test                 # 构建 + 46 条测试
+npm test                 # 构建 + 75 条测试
 npm run check:drift      # 抄写是否与已安装插件一致
 npm run verify           # 上面两件事一起做
 npm run extract           # 插件升级后重新抄一遍
@@ -166,7 +166,7 @@ npm run extract           # 插件升级后重新抄一遍
 
 ---
 
-## 五、打包 / 搬迁可用性
+## 五、打包 / 搬迁可用性（历史记录，旧版本数据）
 
 问过「打成压缩包还能不能用」，所以是真的打包、解压到新目录、再跑一遍：
 
@@ -175,7 +175,7 @@ npm run extract           # 插件升级后重新抄一遍
 | `free-m-clone.zip` | 2.79 MB / 123 个条目，解压后 9.5 MB |
 | 压缩包结构 | 顶层就是 `free-m-clone/`，解压后不会多套一层 |
 | 解压到新路径后 `extract --check` | **exit 0**（不再误报漂移） |
-| 解压后 `npm test`（含 `--with-drift`） | **46 / 46 通过** |
+| 解压后 `npm test`（含 `--with-drift`） | 旧版本验证 **46 / 46 通过** |
 | 解压后 Edge 无头渲染 `dist/index.html` | 13 张卡与全部数据正常 |
 | 只把 `dist/` 单独拷到空目录再打开 | 正常（`dist/` 自包含） |
 
@@ -193,7 +193,7 @@ npm run extract           # 插件升级后重新抄一遍
 ## 六、这份备份能干什么、不能干什么
 
 **能**：当源码参考（就是原文）；当对照物（改插件前后比渲染树）；当离线演示（不碰真实凭据）；
-当回归基线（插件升级后 `--check` + 46 条测试）；换机器换目录照常跑。
+当回归基线（插件升级后 `--check` + 75 条测试）；换机器换目录照常跑。
 
 **不能**：它**不是**一个能登录真实渠道的插件。登录、领取、余额都来自 `src/mock/pack.mjs`，
 不联网、不读 `~/.dsh/channel-pack/state.json`、不接触凭据。真机接入仍然只有原插件能做

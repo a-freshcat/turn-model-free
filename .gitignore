@@ -11,9 +11,6 @@
 #   npm install   # 没有 lock 或要升级时才用
 node_modules/
 
-# 临时预览图（正式截图在 docs/ 下，那些要提交）
-dist/preview.png
-
 # 临时调试目录
 .scratch/
 *.tmp
