@@ -44,14 +44,30 @@ function run(script, extra = [], options = {}) {
  * 用 `npm ci` 而不是 `npm install`：lock 文件里有 integrity 校验和，装出来的
  * 是逐字节相同的那一份（实测 85 个文件哈希全等）。
  */
+/**
+ * 依赖不在仓库里（见 .gitignore），所以干净检出后第一步是装。
+ *
+ * 用 `npm ci` 而不是 `npm install`：lock 文件里有 integrity 校验和，装出来的
+ * 是逐字节相同的那一份（实测 85 个文件哈希全等）。
+ *
+ * Windows 上必须走 shell：Node 从 20 起不允许直接 spawn `.cmd`（会 EINVAL）。
+ * 为了不触发 DEP0190（shell + args 的拼接告警），把整条命令拼成一个字符串传给
+ * shell，而不是 shell:true 再另传 args 数组。
+ */
 function ensureDependencies() {
   const marker = join(ROOT, 'node_modules', 'react', 'package.json')
   if (existsSync(marker)) return
   console.log('node_modules 不存在，按 package-lock.json 安装依赖…')
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  const result = spawnSync(npm, ['ci', '--no-audit', '--no-fund'], { cwd: ROOT, stdio: 'inherit', shell: process.platform === 'win32' })
+  const command = `npm ci --no-audit --no-fund`
+  const result = spawnSync(command, {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: process.platform === 'win32' ? true : false,
+    // 非 Windows 上直接跑命令，不要多余 shell
+    ...(process.platform === 'win32' ? {} : { shell: false }),
+  })
   if (result.error !== undefined || result.status !== 0) {
-    console.error('\n依赖安装失败。请手动执行：npm ci')
+    console.error('\n依赖安装失败。请在仓库根目录手动执行：npm ci')
     console.error('（测试需要 react / react-dom / scheduler，版本与校验和都在 package-lock.json 里）')
     process.exit(1)
   }
