@@ -485,6 +485,92 @@ export default {
       },
     },
     {
+      name: '非文本内容块原样保留（图片/工具调用块不被压成文本）',
+      async run({ assert }) {
+        // 与 CodeArts 图片输入那个真实缺陷同型：序列化消息时把 content 数组
+        // 压成纯文本，图片块被丢弃 → 图发不出去，而且没有任何报错。
+        // 本仓库的防护层会**重建** wire messages，所以必须守住这一条：
+        // 只改写 `type === 'text'` 的块，其余块原样带过。
+        const imageBlock = { type: 'image', attachmentId: 'att-1', mediaType: 'image/png' }
+        const toolBlock = { type: 'tool_call', id: 'call-1', name: 'read_file' }
+        const messages = [
+          { role: 'system', content: 'You are an AI agent powered by DeepSeek Harness.' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'powered by DeepSeek Harness，看这张图' },
+              imageBlock,
+              toolBlock,
+              { type: 'text', text: 'DeepSeek Harness' },
+            ],
+          },
+        ]
+
+        for (const level of [1, 2, 3]) {
+          const wire = scrubForLevel(messages, level)
+          const blocks = wire[1].content
+          assert.equal(blocks.length, 4, `L${level}: 块数不变`)
+          assert.deepEqual(blocks.map(block => block.type), ['text', 'image', 'tool_call', 'text'], `L${level}: 块顺序不变`)
+          assert.deepEqual(blocks[1], imageBlock, `L${level}: 图片块逐字段不变`)
+          assert.deepEqual(blocks[2], toolBlock, `L${level}: 工具调用块逐字段不变`)
+          // 文本块必须**确实被洗过**，否则上面的"保留"是空断言
+          assert.notIncludes(blocks[0].text, 'DeepSeek Harness', `L${level}: 文本块被洗了`)
+          assert.includes(blocks[0].text, 'DSH', `L${level}: 洗成了 DSH`)
+        }
+
+        // 原消息一个字节都不能动（防护层只在拷贝上工作）
+        assert.includes(messages[1].content[0].text, 'DeepSeek Harness', '原消息未被就地改写')
+        assert.deepEqual(messages[1].content[1], imageBlock, '原消息里的图片块仍完好')
+      },
+    },
+    {
+      name: '升档重发时工具字段与非文本块一条不丢（每次重建都完整）',
+      async run({ assert }) {
+        // `requestWithTencentGate` 每升一档都从**原始输入**重建消息。重建路径上
+        // 任何一次"只保留 role/content"都会让 tool_calls 与结果断了关联，
+        // 真实接入表现为参数错误或上下文缺失。这里让上游强制升一档，
+        // 逐次检查**每一次**收到的请求体。
+        const upstream = createFakeTencentUpstream({ requireLevel: 2 })
+        const imageBlock = { type: 'image', attachmentId: 'att-7', mediaType: 'image/png' }
+        const messages = [
+          { role: 'system', content: 'You are an AI agent powered by DeepSeek Harness.' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'DeepSeek\u200BHarness 前缀' },
+              imageBlock,
+            ],
+            tool_calls: [{ id: 'call-9', type: 'function', function: { name: 'f', arguments: '{"a":1}' } }],
+          },
+          { role: 'tool', tool_call_id: 'call-9', name: 'f', content: '规则集结果' },
+        ]
+
+        const result = await requestWithTencentGate({ channel: 'buddy', messages, model: 'm', send: upstream.send })
+        assert.equal(result.response.ok, true, '最终通过')
+        assert.equal(result.escalations, 1, '确实升过一档（否则只检查了一次）')
+        assert.ok(upstream.received.length >= 2, `上游收到至少 2 次（实际 ${upstream.received.length}）`)
+
+        for (const [index, body] of upstream.received.entries()) {
+          const assistant = body.messages.find(message => message.role === 'assistant')
+          const tool = body.messages.find(message => message.role === 'tool')
+          const label = `第 ${index + 1} 次发送`
+          assert.ok(assistant !== undefined, `${label}: assistant 还在`)
+          assert.equal(assistant.tool_calls?.length, 1, `${label}: tool_calls 保留`)
+          assert.equal(assistant.tool_calls[0].id, 'call-9', `${label}: tool_call id 保留`)
+          assert.equal(assistant.tool_calls[0].function.name, 'f', `${label}: function.name 保留`)
+          assert.equal(assistant.content.length, 2, `${label}: 内容块没被压平`)
+          assert.deepEqual(assistant.content[1], imageBlock, `${label}: 图片块保留`)
+          assert.ok(tool !== undefined, `${label}: tool 消息还在`)
+          assert.equal(tool.tool_call_id, 'call-9', `${label}: tool_call_id 保留`)
+          assert.equal(tool.name, 'f', `${label}: tool name 保留`)
+        }
+
+        // 原始输入没有被改写：升档是从原始输入重建，不是在已改文本上叠加
+        assert.includes(messages[1].content[0].text, '\u200B', '原消息里的零宽字符还在')
+        assert.deepEqual(messages[1].content[1], imageBlock, '原消息里的图片块还在')
+      },
+    },
+    {
       name: '移植完整性：函数体未被改写（只能有绑定差异）',
       async run({ assert, readFile }) {
         // 这是对「照描述改代码」的防线：防护层是原样搬过来的，除三个宿主

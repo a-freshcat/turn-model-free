@@ -2,7 +2,7 @@
  *
  * Source: ~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js
  * Plugin version: 2.5.4
- * Source sha256: d5b22d78d2a76fd94bd828a77c3224d4318ca8e2abb5a7dd6aab3f3bf20cdb85
+ * Source sha256: 3e567a15989527214741360e2b35395b51aa99ecda80e2146df1a31824d78104
  * Regenerate: node scripts/extract.mjs
  *
  * The body below is a byte-for-byte copy of the plugin's own page module. Only
@@ -12,126 +12,126 @@
 export const PROVENANCE = {
   "source": "~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js",
   "version": "2.5.4",
-  "sourceSha256": "d5b22d78d2a76fd94bd828a77c3224d4318ca8e2abb5a7dd6aab3f3bf20cdb85",
+  "sourceSha256": "3e567a15989527214741360e2b35395b51aa99ecda80e2146df1a31824d78104",
   "ranges": {
     "icons": {
       "chars": [
-        366062,
-        408812
+        366521,
+        409271
       ],
       "lines": [
-        4170,
-        4180
+        4178,
+        4188
       ],
       "sha256": "d357932731c437a20e0ff3719a0d3d41bf1a6b23b44ffb21569ab5d2941f62b6",
       "bytes": 42750
     },
     "providers": {
       "chars": [
-        417038,
-        418659
+        417497,
+        419118
       ],
       "lines": [
-        4190,
-        4205
+        4198,
+        4213
       ],
       "sha256": "b7c59165a7ef4b35825a99ed068943b3224ad1d079974e55e0ff7d3ce2d26a4e",
       "bytes": 1621
     },
     "credits": {
       "chars": [
-        418704,
-        419185
+        419163,
+        419644
       ],
       "lines": [
-        4207,
-        4222
+        4215,
+        4230
       ],
       "sha256": "260b456a27397369b1e1d0c58a118515f3be3753addcfcdc4c86c46021cc09fc",
       "bytes": 481
     },
     "region": {
       "chars": [
-        365698,
-        456370
+        366157,
+        457343
       ],
       "lines": [
-        4165,
-        4861
+        4173,
+        4883
       ],
-      "sha256": "0bb8c4978060f6ffafabae805250c5cd4d8b9bc17f5b099d3343d7c365c53780",
-      "bytes": 90672
+      "sha256": "de8335dd96728bb557c72f4d42e25cd39bbaa3517905342a8b675948fb2667bb",
+      "bytes": 91186
     }
   },
   "helpers": {
     "kilo": {
       "chars": [
-        269699,
-        269964
+        270158,
+        270423
       ],
       "lines": [
-        2615,
-        2620
+        2623,
+        2628
       ],
       "sha256": "21d3ac5bd9d819c16c656c4d2598d937440271b1fa284d9a4d348dbfe4dafe6b",
       "bytes": 265
     },
     "ago": {
       "chars": [
-        269965,
-        270557
+        270424,
+        271016
       ],
       "lines": [
-        2622,
-        2632
+        2630,
+        2640
       ],
       "sha256": "58081973a17960480c4c0d8203605e073a2fb6148b0f2391be3da2468d6c000d",
       "bytes": 592
     },
     "showToast": {
       "chars": [
-        279664,
-        282006
+        280123,
+        282465
       ],
       "lines": [
-        2835,
-        2888
+        2843,
+        2896
       ],
       "sha256": "7853ef0f6343f5d9485751fcb77969ca8536f9ffd854af46b5c907fe90138c00",
       "bytes": 2342
     },
     "toastHost": {
       "chars": [
-        279399,
-        279663
+        279858,
+        280122
       ],
       "lines": [
-        2825,
-        2833
+        2833,
+        2841
       ],
       "sha256": "946503e41c74475f8ce10de96f7b8ff0664683cb6225e666ffb4d50e8f147a2f",
       "bytes": 264
     },
     "Switch": {
       "chars": [
-        283851,
-        284458
+        284310,
+        284917
       ],
       "lines": [
-        2931,
-        2942
+        2939,
+        2950
       ],
       "sha256": "6783b03734177529849b244f0227b07db840fe6c1b4ba090d44b57c1ccae7449",
       "bytes": 607
     },
     "Pill": {
       "chars": [
-        284459,
-        284669
+        284918,
+        285128
       ],
       "lines": [
-        2944,
-        2946
+        2952,
+        2954
       ],
       "sha256": "15edcb96690a284ad6e5ade5445e5fd4ef91b372cbb59ae0a82f290f650699f0",
       "bytes": 210
@@ -263,8 +263,21 @@ export function createChannelsPage(env) {
       try { if (popup && !popup.closed) popup.close() } catch { /* best effort */ }
     }
 
+    /**
+     * 账号是否处于「凭据在，但续期材料已被服务端判死」的状态。
+     *
+     * ⚠️ 判据必须**单独**成立，不能沿用旧的 `!refreshable && !expiresAt`：
+     * CodeArts 的 `expiresAt` 永远有值（access_token 约 2 小时就会写一个），
+     * 于是旧判据在它身上恒为 false —— 账号明明已经用不了，面板还显示「已启用」。
+     * 这就是用户看到「受限 / 一直用不了」却查不出原因的 UI 半边（2026-10-25）。
+     */
+    function needsRelogin(entry) {
+      return entry?.refreshable === false
+    }
+
     /** Human text for a millisecond timestamp, or the long-lived marker. */
     function expiryText(entry, t) {
+      if (needsRelogin(entry)) return t('chan.expires.relogin')
       if (!Number.isFinite(entry?.expiresAt) || entry.expiresAt <= 0) return t('chan.expires.never')
       return ago(entry.expiresAt, t.locale)
     }
@@ -620,10 +633,11 @@ export function createChannelsPage(env) {
             : accounts.length === 0 ? h('p', { className: 'ofm_note' }, t('chan.noAccount'))
               : h('div', { className: 'ofm_acctlist' }, accounts.map(row => {
                 const credit = creditFor(row.id)
-                const pending = row.refreshable !== true && !Number.isFinite(row.expiresAt)
+                const pending = needsRelogin(row)
                 return h('div', { className: 'ofm_acct' + (pending ? ' pending' : ''), key: row.id },
                   h('span', { className: 'ofm_acctname', title: row.nickname ?? row.id }, row.nickname ?? row.id),
                   h('span', { className: 'ofm_acctmeta' }, row.enabled === false ? t('chan.disabled') : t('chan.enabled'), ' · ', expiryText(row, t)),
+                  pending ? h('span', { className: 'ofm_balanceerror', role: 'status' }, t('chan.expires.relogin')) : null,
                   credit?.todayCheckedIn === true && Number.isFinite(credit.todayCredit) ? h('span', { className: 'ofm_creditbadge' },
                     t('chan.credit.today').replace('{credit}', String(credit.todayCredit))) : null,
                   (() => {

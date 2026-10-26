@@ -319,7 +319,7 @@ const subsetCss = renderCss()
 /* ── dictionary ─────────────────────────────────────────────────────────── */
 
 /**
- * The page's 69 `chan.*` strings, taken out of the plugin's own DICT.
+ * The page's `chan.*` strings, taken out of the plugin's own DICT.
  *
  * The dictionary is a JS object literal, so it is evaluated (in an empty
  * context) rather than pattern-matched — that keeps the copy faithful even if a

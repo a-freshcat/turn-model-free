@@ -33,11 +33,11 @@ git status --porcelain      # 期望：无输出（工作区干净）
 node scripts/test-all.mjs --with-drift
 ```
 
-**期望**：末尾 `PASS 75/75`，退出码 0。
+**期望**：末尾 `PASS 77/77`，退出码 0。
 
 | 现象 | 说明什么 |
 |---|---|
-| `PASS 75/75` | 一切正常，继续看 §2–§5 的细项 |
+| `PASS 77/77` | 一切正常，继续看 §2–§5 的细项 |
 | `node_modules 不存在，按 package-lock.json 安装依赖…` 后失败 | 网络不通或 lock 损坏；见 §4 |
 | 某套失败 | 按套件名定位到 §3 对应小节 |
 | `--check: ... differs` | 有生成物与来源不一致，见 §2.2 |
@@ -65,13 +65,20 @@ node scripts/extract.mjs --check
 
 | 字段 | 值 |
 |---|---|
-| `sourceSha256` | `d5b22d78d2a76fd94bd828a77c3224d4318ca8e2abb5a7dd6aab3f3bf20cdb85` |
+| `sourceSha256` | `3e567a15989527214741360e2b35395b51aa99ecda80e2146df1a31824d78104` |
 | `version` | `2.5.4` |
-| `ranges.region.bytes` | `90672` |
-| `ranges.region.chars` | `[365698, 456370]` |
+| `ranges.region.chars` | `91186`（字符数，不是字节；UTF-8 字节数另见 provenance） |
+| `ranges.region.lines` | `[4173, 4883]` |
 | `css.keptRules` | `162` |
-| `dict.zhKeys` / `enKeys` | `69` / `69` |
+| `dict.zhKeys` / `enKeys` | `70` / `70` |
 | `dict.missingEn` / `missingZh` | `[]` / `[]` |
+
+> ⚠️ **`sourceSha256` 会随安装目录变动**。它记的是"我抄写那一刻，磁盘上那个
+> `client.js`"的哈希。若本机插件在别的会话里被打了补丁（本仓库就遇到过：
+> 2026-10-25 有人修了「失效凭据不提示重新登录」的缺陷），这个值会变，
+> `extract --check` 会报 `differs` —— 那是**真的漂移**，不是误报。
+> 处理方式：重跑 `node scripts/extract.mjs` 重新抄写，而不是改这个期望值。
+> 复核时请以"重跑后 `--check` 退出码 0"为准，而不是这里的字面数字。
 
 **可以主动证伪的问题**（把答案与代码对照，不要只看测试）：
 
@@ -179,7 +186,7 @@ node src/test/run.mjs src/test/parity.test.mjs
 node src/test/run.mjs src/test/guard.test.mjs
 ```
 
-**期望**：`PASS 15/15`。
+**期望**：`PASS 17/17`。
 
 **请重点质疑以下断言，它们是基于实测行为写的，可能与直觉不符：**
 
@@ -262,7 +269,7 @@ node scripts/test-all.mjs      # 不手动装任何依赖
 ```
 
 **期望**：先打印 `node_modules 不存在，按 package-lock.json 安装依赖…`，
-然后 `added 3 packages`，最后 `PASS 75/75`，**且没有 `DEP0190` 之类的告警**。
+然后 `added 3 packages`，最后 `PASS 77/77`，**且没有 `DEP0190` 之类的告警**。
 
 > Windows 上这里曾经踩两个坑：Node 20+ 不允许直接 spawn `.cmd`（EINVAL），
 > 必须走 shell；而 `shell:true` + args 数组又会触发 DEP0190。
@@ -384,12 +391,12 @@ console.log('不可见字符出现次数:', codes.length);
 | # | 检查 | 命令 | 期望 |
 |---|---|---|---|
 | 1 | 工作区干净 | `git status --porcelain` | 无输出 |
-| 2 | 全套测试 | `node scripts/test-all.mjs --with-drift` | `PASS 75/75`，exit 0 |
+| 2 | 全套测试 | `node scripts/test-all.mjs --with-drift` | `PASS 77/77`，exit 0 |
 | 3 | 页面未漂移 | `node scripts/extract.mjs --check` | exit 0 |
 | 4 | 防护层未漂移 | `node scripts/merge-guard.mjs --check` | exit 0 |
 | 5 | 令牌未漂移 | `node scripts/extract-theme.mjs --check` | exit 0 |
 | 6 | 渲染树一致 | `node src/test/run.mjs src/test/parity.test.mjs` | `7/7` |
-| 7 | 防护语义 | `node src/test/run.mjs src/test/guard.test.mjs` | `15/15` |
+| 7 | 防护语义 | `node src/test/run.mjs src/test/guard.test.mjs` | `17/17` |
 | 8 | 端到端升档 | `node src/test/run.mjs src/test/guard-demo.test.mjs` | `5/5` |
 | 9 | 页面交互 | `node src/test/run.mjs src/test/behaviour.test.mjs` | `21/21` |
 | 10 | 交付物冒烟 | `node src/test/run.mjs src/test/demo.test.mjs` | `9/9` |

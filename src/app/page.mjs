@@ -8,7 +8,7 @@
  *     `ago`) — imported from the extracted copy of *that* code, not re-invented;
  *   - `post`, the plugin's JSON API helper, kept for the `/open-external` call
  *     the login flow makes on hosts that cannot open a popup;
- *   - the dictionary: the plugin's 69 `chan.*` strings, copied out of its zh/en
+ *   - the dictionary: the plugin's `chan.*` strings, copied out of its zh/en
  *     DICT, with a `t()` binder that does the same `{placeholder}` substitution
  *     and falls back to the key like the shell's locale service.
  */

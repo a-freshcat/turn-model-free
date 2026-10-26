@@ -76,6 +76,12 @@ export default {
           assert.includes(html, '已停用')
           // buddy rows carry a today credit; codearts rows do not
           assert.includes(html, '今日已领 200')
+          // 2026-10-25 的修复：凭据还在但续期材料已死的账号必须标成「需重新登录」。
+          // 旧判据 `!refreshable && !expiresAt` 在 CodeArts 身上恒为 false
+          // （它的 expiresAt 永远有值），于是账号明明用不了、面板还显示「已启用」。
+          // trae-2 正是 refreshable:false 的行，这条断言把新判据钉住。
+          assert.includes(html, '需重新登录', '失效凭据的账号被标出来')
+          assert.match(html, /ofm_acct pending/, 'pending 修饰类渲染出来了')
         } finally { harness.teardown() }
       },
     },

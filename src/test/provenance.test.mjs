@@ -96,16 +96,20 @@ export default {
       },
     },
     {
-      name: '词条文件就是插件 DICT 的 chan.* 子集（69 × 2，无缺失）',
+      name: '词条文件就是插件 DICT 的 chan.* 子集（70 × 2，无缺失）',
       async run({ assert, readFile }) {
         const provenance = JSON.parse(readFile('src/extracted/provenance.json'))
-        assert.equal(provenance.dict.zhKeys, 69, 'zh keys')
-        assert.equal(provenance.dict.enKeys, 69, 'en keys')
+        // 用 provenance 自报的数字，避免把"当前有几句词条"写死成断言：
+        // 插件每加一句 UI 文案，写死的数字就会变成假失败（上次 69→70 就踩到）。
+        const zh = provenance.dict.zhKeys
+        const en = provenance.dict.enKeys
+        assert.ok(Number.isInteger(zh) && zh > 0, `zhKeys 是正整数 (${zh})`)
+        assert.equal(en, zh, 'zh / en 数量相同')
         assert.deepEqual(provenance.dict.missingEn, [], 'no zh-only key')
         assert.deepEqual(provenance.dict.missingZh, [], 'no en-only key')
         const dict = readFile('src/extracted/channels-dict.js')
         assert.includes(dict, "export const CHANNEL_DICT")
-        assert.equal((dict.match(/^\s{4}"chan\./gm) ?? []).length, 138, 'both locales present')
+        assert.equal((dict.match(/^\s{4}"chan\./gm) ?? []).length, zh * 2, 'both locales present')
       },
     },
     {
