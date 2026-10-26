@@ -384,6 +384,38 @@ console.log('不可见字符出现次数:', codes.length);
 > 还有一条自查方式：把 `src/guard/pipeline.mjs` 换回修复前的版本再跑
 > `native-response.test.mjs`，应当是 **4 条失败**。如果全绿，说明测试是空断言。
 
+### 6.2 跟随上游修复重新抄写（2026-10-26）
+
+安装目录里的 `client.js` 不是一成不变的。本仓库抄写之后，它在 **2026-10-25**
+被别的会话打过一个补丁：
+
+```
+needsRelogin(entry) → entry?.refreshable === false
+```
+
+原来判据是 `!refreshable && !expiresAt`，而 CodeArts 的 `expiresAt` 永远有值
+（access_token 约两小时就写一个），于是**账号明明已经用不了，面板还显示「已启用」**。
+这段代码正落在本仓库抄写的区间内，所以重新抽取跟进：
+
+| 项 | 变化 |
+|---|---|
+| 页面切片 | `90672` → `91186` 字符 |
+| 词条 | `69` → `70`（新增 `chan.expires.relogin`） |
+| `sourceSha256` | `d5b22d78…` → `3e567a15…` |
+
+**这条留给审查者的意义**：`sourceSha256` 与 `region.chars` 是**会变**的。
+比对时以"重跑 `extract.mjs` 后 `--check` 退出码 0"为准；如果只因哈希不同就
+判定"副本被篡改"，会误判——先看安装目录里的 `client.js` 是不是也变了。
+
+同时补了两条防线：
+
+| 补的防线 | 原因 |
+|---|---|
+| `provenance` 测试不再写死词条数，改读 `provenance.dict.zhKeys` 并校验 zh/en 相等 | 写死 `69` 时，插件加一句文案就让整条测试假红 |
+| 账号折叠区的渲染树对比新增 `需重新登录` 与 `ofm_acct pending` 断言 | `trae-2` 正是 `refreshable:false` 的行，此前这个分支渲染出来却没人断言 |
+| 新增两条防护层回归：非文本块原样保留、升档重发工具字段不丢 | 对应「序列化消息时压平 content 数组」这一类真实缺陷（CodeArts 图片输入即此形态） |
+| 测试不再依赖 `process.cwd()` | 从任意目录调用 `test-all.mjs` 时，原会去 `C:\Windows\src\...` 找文件并满屏假红 |
+
 ---
 
 ## 7. 快速核对表（勾选式）
@@ -404,7 +436,8 @@ console.log('不可见字符出现次数:', codes.length);
 | 12 | **原生 Response 回归** | `node src/test/run.mjs src/test/native-response.test.mjs` | `6/6` |
 | 13 | 依赖不入库 | `git ls-files \| grep -c node_modules` | `0` |
 | 14 | 无凭据 | `git grep -E "ghp_\|sk-[A-Za-z0-9]{32}"` | 无匹配 |
-| 15 | 干净克隆可跑 | 新 clone 后直接 `node scripts/test-all.mjs` | 自动装依赖后 `75/75` |
+| 15 | 干净克隆可跑 | 新 clone 后直接 `node scripts/test-all.mjs` | 自动装依赖后 `77/77` |
+| 16 | **与工作目录无关** | 在 `C:\Windows` 等任意目录执行 `node <repo>/scripts/test-all.mjs --no-build` | 同样 `77/77`（测试不得依赖 `process.cwd()`） |
 
 **如果你发现任何一条与上表不符，那就是真问题，请直接指出命令与输出。**
 **如果你发现上表"期望值"本身写错了（例如某条测试其实是空断言），那更有价值——请说明理由。**
