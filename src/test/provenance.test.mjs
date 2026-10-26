@@ -10,7 +10,17 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * 仓库根目录，锚到本文件位置。
+ *
+ * 早先这里用 `process.cwd()`，于是从别的目录运行
+ * `node <repo>/scripts/test-all.mjs` 会去 `C:\Windows\src\...` 找文件并 ENOENT
+ * —— "换个目录跑一遍"正是审查者会做的事，那样会得到满屏假红。
+ */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const hash = text => createHash('sha256').update(text, 'utf8').digest('hex')
 
@@ -23,7 +33,7 @@ const hash = text => createHash('sha256').update(text, 'utf8').digest('hex')
 function resolveSource() {
   const explicit = process.env.OFM_CLIENT_PATH
   if (explicit !== undefined && explicit !== '') return explicit
-  const provenance = JSON.parse(readFileSync(join(process.cwd(), 'src/extracted/provenance.json'), 'utf8'))
+  const provenance = JSON.parse(readFileSync(join(ROOT, 'src/extracted/provenance.json'), 'utf8'))
   const label = String(provenance.source).replace(/\\/g, '/')
   return label.startsWith('~/') ? join(homedir(), label.slice(2)) : label
 }
@@ -35,8 +45,8 @@ export default {
       name: '生成物与已安装插件逐字节一致（extract 可重跑）',
       async run({ assert, readFile }) {
         const provenancePath = 'src/extracted/provenance.json'
-        assert.ok(existsSync(join(process.cwd(), provenancePath)), 'provenance.json exists')
-        const provenance = JSON.parse(readFileSync(join(process.cwd(), provenancePath), 'utf8'))
+        assert.ok(existsSync(join(ROOT, provenancePath)), 'provenance.json exists')
+        const provenance = JSON.parse(readFileSync(join(ROOT, provenancePath), 'utf8'))
         assert.ok(provenance.sourceSha256.length === 64, 'source hash recorded')
         assert.ok(provenance.ranges.region.lines[0] > 0, 'source line range recorded')
 
@@ -181,7 +191,7 @@ export default {
         for (const [name, command] of Object.entries(pkg.scripts)) {
           const match = /node ([\w./-]+)/.exec(command)
           assert.ok(match, `${name} runs node`)
-          assert.ok(existsSync(join(process.cwd(), match[1])), `${name}: ${match[1]} exists`)
+          assert.ok(existsSync(join(ROOT, match[1])), `${name}: ${match[1]} exists`)
         }
         assert.ok(pkg.scripts.test, 'test script')
         assert.ok(pkg.scripts.extract, 'extract script')
@@ -217,7 +227,7 @@ export default {
         }
         // and no absolute path may point *inside* this checkout, or moving the
         // folder would break the recorded provenance
-        const root = process.cwd().replace(/\\/g, '/')
+        const root = ROOT.replace(/\\/g, '/')
         for (const path of generated) {
           assert.notIncludes(readFile(path).replace(/\\/g, '/'), root, `${path}: no self-referencing absolute path`)
         }
@@ -231,13 +241,13 @@ export default {
         for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
           const url = match[1]
           assert.ok(!/^([A-Za-z]:|\/|\\\\|https?:)/.test(url), `absolute or remote resource: ${url}`)
-          assert.ok(existsSync(join(process.cwd(), 'dist', url)), `dist/${url} exists`)
+          assert.ok(existsSync(join(ROOT, 'dist', url)), `dist/${url} exists`)
         }
         // and the bundle must not hard-code this checkout's location
         const bundle = readFile('dist/demo.js').replace(/\\/g, '/')
-        assert.notIncludes(bundle, process.cwd().replace(/\\/g, '/'), 'bundle has no absolute checkout path')
+        assert.notIncludes(bundle, ROOT.replace(/\\/g, '/'), 'bundle has no absolute checkout path')
         // 演示页自包含：只需要 dist/，不需要 node_modules
-        assert.ok(existsSync(join(process.cwd(), 'dist', 'demo.js')), 'demo bundle exists')
+        assert.ok(existsSync(join(ROOT, 'dist', 'demo.js')), 'demo bundle exists')
       },
     },
     {
@@ -273,7 +283,7 @@ export default {
         // merge-guard 曾经只能从 ../main_repai/ 取源，克隆到别处就跑不了，
         // "防护层有没有被改"也就无从复核。基线现在 vendored 进仓库。
         const baselinePath = 'vendor/upstream/tencent-gate-guard.js'
-        assert.ok(existsSync(join(process.cwd(), baselinePath)), `${baselinePath} 在仓库里`)
+        assert.ok(existsSync(join(ROOT, baselinePath)), `${baselinePath} 在仓库里`)
 
         const baseline = readFile(baselinePath)
         const provenance = JSON.parse(readFile('src/guard/provenance.json'))

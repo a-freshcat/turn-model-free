@@ -7,8 +7,20 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { bootDemo } from './demo-boot.mjs'
 import { allByClass, elements, serialize } from './env.mjs'
+
+/**
+ * 读仓库里的文件，**与进程工作目录无关**。
+ *
+ * 早先这里直接 `readFileSync('dist/index.html')`，于是从别的目录调用
+ * `node <repo>/scripts/test-all.mjs` 会 ENOENT、整套假红——而"换个目录跑
+ * 测试"正是审查者会做的事。锚到本文件位置即可。
+ */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const readRepo = relative => readFileSync(join(ROOT, relative), 'utf8')
 
 /* The bundle replaces the environment's timers with the page's own; keep the
  * harness's `settle` on real timers by grabbing them before any boot. */
@@ -23,14 +35,14 @@ export default {
     {
       name: 'dist/index.html 引用的资源都在，且没有内联脚本错误',
       async run({ assert }) {
-        const html = readFileSync('dist/index.html', 'utf8')
+        const html = readRepo('dist/index.html')
         assert.includes(html, 'demo.css')
         assert.includes(html, 'demo.js')
         assert.includes(html, 'page-root')
         assert.includes(html, 'controls')
         assert.includes(html, 'rpc-log')
         // the entry point the inline script calls must exist in the bundle…
-        const bundle = readFileSync('dist/demo.js', 'utf8')
+        const bundle = readRepo('dist/demo.js')
         assert.includes(bundle, 'window.__OFM_DEMO__')
         assert.includes(bundle, 'start: start')
         // …and the HTML must be the one calling it
@@ -115,7 +127,7 @@ export default {
           assert.includes(html, 'Free channel access')
           assert.includes(html, 'Add account')
           assert.ok(document.body.hasAttribute('data-ds-dark-theme'), 'dark attribute set')
-          const css = readFileSync('dist/demo.css', 'utf8')
+          const css = readRepo('dist/demo.css')
           assert.includes(css, 'body[data-ds-dark-theme]')
           // dark tokens must actually redefine the layer the cards paint on
           const dark = css.slice(css.indexOf('body[data-ds-dark-theme]'))
@@ -178,7 +190,7 @@ export default {
     {
       name: '样式表：页面样式与主题令牌都打进了 dist/demo.css',
       async run({ assert }) {
-        const css = readFileSync('dist/demo.css', 'utf8')
+        const css = readRepo('dist/demo.css')
         assert.includes(css, '.ofm_chan{')
         assert.includes(css, '.ofm_chanwrap{')
         assert.includes(css, '--dsw-alias-bg-layer-1:')
