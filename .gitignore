@@ -15,5 +15,10 @@ node_modules/
 .scratch/
 *.tmp
 
+# 写 commit message 用的临时文件（PowerShell 没有 heredoc，只能先落盘再 `-F`）。
+# 曾经因为 `git add -A` 把它一起提交进仓库，所以在这里拦住。
+commit-msg*.txt
+.git-commit-msg.tmp
+
 # 工作区归属标记（属于 DSH 工作区协作，不属于这个仓库）
 .session-id
