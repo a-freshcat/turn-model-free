@@ -2,7 +2,7 @@
  *
  * Source: ~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js
  * Plugin version: 2.5.4
- * Source sha256: 3e567a15989527214741360e2b35395b51aa99ecda80e2146df1a31824d78104
+ * Source sha256: 1b16b564c4d204e1682eebc518684cfaacc0dace00c386791addd13a364f8e9b
  * Regenerate: node scripts/extract.mjs
  *
  * The body below is a byte-for-byte copy of the plugin's own page module. Only
@@ -12,7 +12,7 @@
 export const PROVENANCE = {
   "source": "~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js",
   "version": "2.5.4",
-  "sourceSha256": "3e567a15989527214741360e2b35395b51aa99ecda80e2146df1a31824d78104",
+  "sourceSha256": "1b16b564c4d204e1682eebc518684cfaacc0dace00c386791addd13a364f8e9b",
   "ranges": {
     "icons": {
       "chars": [
@@ -53,14 +53,14 @@ export const PROVENANCE = {
     "region": {
       "chars": [
         366157,
-        457343
+        457365
       ],
       "lines": [
         4173,
         4883
       ],
-      "sha256": "de8335dd96728bb557c72f4d42e25cd39bbaa3517905342a8b675948fb2667bb",
-      "bytes": 91186
+      "sha256": "a20c64f2285506536791138c04d32de687bcfd8e07acdb2dc99829830469e3be",
+      "bytes": 91208
     }
   },
   "helpers": {
@@ -660,7 +660,7 @@ export function createChannelsPage(env) {
                       onClick: () => accountAction('test:' + row.id, row.id, async () => {
                         const value = await rpc('account.test', { accountId: row.id }, 90_000)
                         setNotice(value?.ok === false
-                          ? t('chan.test.failed').replace('{reason}', value?.error ?? '')
+                          ? t('chan.test.failed').replace('{reason}', value?.message ?? value?.error ?? '未知错误')
                           : t('chan.test.ok').replace('{ms}', String(value?.ms ?? value?.latencyMs ?? '—')))
                       }),
                     }, t('chan.act.test')),

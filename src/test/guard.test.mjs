@@ -115,10 +115,19 @@ export default {
   title: 'Guard · 腾讯 11128 防护层（移植版）',
   tests: [
     {
-      name: '移植完整：10 条规则、三档语义、预算默认 2',
-      async run({ assert }) {
+      name: '移植完整：规则表与基线逐条一致、三档语义、预算默认 2',
+      async run({ assert, readFile }) {
         assert.ok(Array.isArray(TENCENT_GATE_RULES), '规则表存在')
-        assert.equal(TENCENT_GATE_RULES.length, 10, '规则条数')
+        // 不写死条数：上游会随时新增规则（2026-10-28 就从 10 条变成 12 条，
+        // 还删掉了 leading-brand-line）。改为与仓库里的基线逐条比对——
+        // 条数变了但没同步基线才该报错。
+        const provenance = JSON.parse(readFile('src/guard/provenance.json'))
+        assert.equal(TENCENT_GATE_RULES.length, provenance.rules, '规则条数与 provenance 记录一致')
+        const baseline = readFile('vendor/upstream/tencent-gate-guard.js')
+        // 双向比对：既不能丢基线里的规则，也不能凭空多出规则
+        const baselineIds = [...baseline.matchAll(/^\s{4}id: "([^"]+)"/gm)].map(match => match[1])
+        const mergedIds = TENCENT_GATE_RULES.map(rule => rule.id)
+        assert.deepEqual(mergedIds, baselineIds, '合并产物的规则列表与基线完全一致（不丢不多、顺序相同）')
         const levels = new Set(TENCENT_GATE_RULES.map(rule => rule.level))
         assert.deepEqual([...levels].sort(), [1, 2, 3], '三档齐全')
         // 每条规则都必须有 id / find / replace
@@ -568,6 +577,80 @@ export default {
         // 原始输入没有被改写：升档是从原始输入重建，不是在已改文本上叠加
         assert.includes(messages[1].content[0].text, '\u200B', '原消息里的零宽字符还在')
         assert.deepEqual(messages[1].content[1], imageBlock, '原消息里的图片块还在')
+      },
+    },
+    {
+      name: 'L1 抓不到的「@ + path」指纹：靠 L2 升档通过（真实 11128 形态）',
+      async run({ assert }) {
+        // 2026-10-28 实测发现的新指纹：这两句**同时出现**即 400/11128，
+        // 与品牌无关（单发任一句都通过）。它解释了「已升档 2 次仍未通过」——
+        // 旧的 10 条规则全围绕品牌短语，三档发出的内容完全相同。
+        //
+        // 这条测试同时守住两件事：
+        //   1. 新规则（at-path-hint / path-root-phrase）确实在位并生效
+        //   2. L1 抓不到它、L2 才抓到 —— 升档机制真的有用，不是摆设
+        const AT_PATH = 'Tokens prefixed with @ are paths the user explicitly referenced.'
+        const PATH_ROOT = 'Relative paths resolve from the workspace root; absolute paths identify files or directories on the host.'
+
+        // L1 不应改写它（否则说明被别的规则误伤，语义会丢）
+        const l1 = [{ role: 'system', content: `${AT_PATH}\n${PATH_ROOT}` }]
+        assert.equal(applyTencentGateGuard(l1, 1), 0, 'L1 不动这两句')
+        assert.includes(l1[0].content, AT_PATH, 'L1 之后原文仍在')
+
+        // L2 必须改写，且**保持语义**（@ 引用与路径解析说明都要还在）
+        const l2 = [{ role: 'system', content: `${AT_PATH}\n${PATH_ROOT}` }]
+        assert.equal(applyTencentGateGuard(l2, 2), 1, 'L2 改写了它')
+        const rewritten = l2[0].content
+        assert.notIncludes(rewritten, 'prefixed with @', '@ 与 path 的组合被拆开')
+        assert.match(rewritten, /At-prefixed tokens denote files/, '语义保留：仍说明 @ 前缀的含义')
+        assert.match(rewritten, /relative|Relative/i, '语义保留：仍说明路径解析')
+        assert.notIncludes(rewritten, 'absolute paths identify', '搭档句也被改写')
+
+        // 端到端：假上游按这两句判 11128，管道必须靠升档自救
+        const BLOCK = JSON.stringify({ error: { code: 11128, message: 'Illegal API invocation from an unapproved channel' } })
+        const received = []
+        const send = async body => {
+          received.push(structuredClone(body))
+          const sys = body.messages
+            .filter(message => message.role === 'system' || message.role === 'assistant')
+            .map(message => (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)))
+            .join('\n')
+          if (/prefixed with @/.test(sys) || /absolute paths identify/.test(sys)) {
+            return { ok: false, status: 400, text: async () => BLOCK }
+          }
+          return { ok: true, status: 200, text: async () => '{}' }
+        }
+        const result = await requestWithTencentGate({
+          channel: 'buddy',
+          model: 'm',
+          messages: [
+            { role: 'system', content: [{ type: 'text', text: 'You are an AI coding agent.' }, { type: 'text', text: AT_PATH }, { type: 'text', text: PATH_ROOT }] },
+            { role: 'user', content: 'hi' },
+          ],
+          send,
+        })
+        assert.equal(result.response.ok, true, '最终通过')
+        assert.equal(result.escalations, 1, '确实升了一档（L1 被拒 → L2 通过）')
+        assert.equal(result.finalLevel, 2, '终态是 L2')
+        assert.equal(received.length, 2, '上游收到 2 次')
+      },
+    },
+    {
+      name: '基线里的每条规则都进了产物，且没有凭空多出规则',
+      async run({ assert, readFile }) {
+        // 上游 2026-10-28 同时做了两件事：新增 3 条、删掉 leading-brand-line。
+        // 如果合并脚本「整块替换」而不是「照基线同步」，就会静默丢规则——
+        // 这次真的发生过（patch-tencent-gate-atpath.mjs 用 NEW_RULES 覆盖了锚点）。
+        const baseline = readFile('vendor/upstream/tencent-gate-guard.js')
+        const baselineIds = [...baseline.matchAll(/^\s{4}id: "([^"]+)"/gm)].map(match => match[1])
+        const mergedIds = TENCENT_GATE_RULES.map(rule => rule.id)
+        assert.ok(baselineIds.length >= 10, `基线至少有 10 条规则（实际 ${baselineIds.length}）`)
+        assert.deepEqual(mergedIds, baselineIds, '顺序与内容都一致')
+        // 被删掉的那条不能悄悄回来（它已被证明是多余的，见 §6.3）
+        assert.notOk(mergedIds.includes('leading-brand-line'), 'leading-brand-line 已按基线移除')
+        for (const id of ['at-path-hint', 'path-root-phrase', 'at-path-hint-loose']) {
+          assert.ok(mergedIds.includes(id), `新规则 ${id} 在位`)
+        }
       },
     },
     {

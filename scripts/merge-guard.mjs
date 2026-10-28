@@ -207,7 +207,10 @@ const provenance = {
   mergedSha256: createHash('sha256').update(output, 'utf8').digest('hex'),
   packageVersion: '2.5.4',
   installPackSha256: '9b6d430a51bd047534bba4608024a5e571e277fa8b9534cb143f0db119b544cc',
-  rules: 10,
+  // 从产物里**实测**数出来的，不要写死：上游 2026-10-28 把规则从 10 条改成 12 条
+  // （新增 at-path-hint / path-root-phrase / at-path-hint-loose，
+  //  同时删掉 leading-brand-line），写死的数字当场过时。
+  rules: (output.match(/^\s{4}id: "[^"]+"/gm) ?? []).length,
   defaultMaxEscalations: 2,
   rewrites: [
     {

@@ -33,11 +33,11 @@ git status --porcelain      # 期望：无输出（工作区干净）
 node scripts/test-all.mjs --with-drift
 ```
 
-**期望**：末尾 `PASS 77/77`，退出码 0。
+**期望**：末尾 `PASS 79/79`，退出码 0。
 
 | 现象 | 说明什么 |
 |---|---|
-| `PASS 77/77` | 一切正常，继续看 §2–§5 的细项 |
+| `PASS 79/79` | 一切正常，继续看 §2–§5 的细项 |
 | `node_modules 不存在，按 package-lock.json 安装依赖…` 后失败 | 网络不通或 lock 损坏；见 §4 |
 | 某套失败 | 按套件名定位到 §3 对应小节 |
 | `--check: ... differs` | 有生成物与来源不一致，见 §2.2 |
@@ -65,9 +65,9 @@ node scripts/extract.mjs --check
 
 | 字段 | 值 |
 |---|---|
-| `sourceSha256` | `3e567a15989527214741360e2b35395b51aa99ecda80e2146df1a31824d78104` |
+| `sourceSha256` | `1b16b564c4d204e1682eebc518684cfaacc0dace00c386791addd13a364f8e9b` |
 | `version` | `2.5.4` |
-| `ranges.region.chars` | `91186`（字符数，不是字节；UTF-8 字节数另见 provenance） |
+| 页面切片长度 | `91208` 字符（`chars` 区间 `[366157, 457365]`；是字符数不是字节） |
 | `ranges.region.lines` | `[4173, 4883]` |
 | `css.keptRules` | `162` |
 | `dict.zhKeys` / `enKeys` | `70` / `70` |
@@ -101,10 +101,10 @@ node scripts/merge-guard.mjs --check
 
 | 字段 | 值 |
 |---|---|
-| 基线 `vendor/upstream/tencent-gate-guard.js` sha256 | `dfb86be77bcf451b6fa4629d5591bcf80903b3cda82018736b4d66e6d625baed` |
-| 合并产物 `src/guard/tencent-gate.js` sha256 | `4d4ea38503b6fe7fbcc2eae126f3ac2219a94e62501512822f581e122d3ed4c6` |
+| 基线 `vendor/upstream/tencent-gate-guard.js` sha256 | `49f8b73315e35624d14e7cbae74193d03877d2a0f68b115d6297a4c38465636d` |
+| 合并产物 `src/guard/tencent-gate.js` sha256 | `df87bc4d7f2c245558d7a6f0fe8ddfb7e8089ef456a97bc4ac82a5a80cce2935` |
 | 上游安装文件 `pack.js` sha256（记录用） | `9b6d430a51bd047534bba4608024a5e571e277fa8b9534cb143f0db119b544cc` |
-| 规则数 | `10` |
+| 规则数 | `12`（2026-10-28 上游由 10 条改为 12 条；见 §6.3） |
 | 升档预算默认 | `2` |
 
 **重点审查项：`src/guard/tencent-gate.js` 与基线相比，函数体真的没被改吗？**
@@ -186,7 +186,7 @@ node src/test/run.mjs src/test/parity.test.mjs
 node src/test/run.mjs src/test/guard.test.mjs
 ```
 
-**期望**：`PASS 17/17`。
+**期望**：`PASS 19/19`。
 
 **请重点质疑以下断言，它们是基于实测行为写的，可能与直觉不符：**
 
@@ -269,7 +269,7 @@ node scripts/test-all.mjs      # 不手动装任何依赖
 ```
 
 **期望**：先打印 `node_modules 不存在，按 package-lock.json 安装依赖…`，
-然后 `added 3 packages`，最后 `PASS 77/77`，**且没有 `DEP0190` 之类的告警**。
+然后 `added 3 packages`，最后 `PASS 79/79`，**且没有 `DEP0190` 之类的告警**。
 
 > Windows 上这里曾经踩两个坑：Node 20+ 不允许直接 spawn `.cmd`（EINVAL），
 > 必须走 shell；而 `shell:true` + args 数组又会触发 DEP0190。
@@ -414,7 +414,58 @@ needsRelogin(entry) → entry?.refreshable === false
 | `provenance` 测试不再写死词条数，改读 `provenance.dict.zhKeys` 并校验 zh/en 相等 | 写死 `69` 时，插件加一句文案就让整条测试假红 |
 | 账号折叠区的渲染树对比新增 `需重新登录` 与 `ofm_acct pending` 断言 | `trae-2` 正是 `refreshable:false` 的行，此前这个分支渲染出来却没人断言 |
 | 新增两条防护层回归：非文本块原样保留、升档重发工具字段不丢 | 对应「序列化消息时压平 content 数组」这一类真实缺陷（CodeArts 图片输入即此形态） |
-| 测试不再依赖 `process.cwd()` | 从任意目录调用 `test-all.mjs` 时，原会去 `C:\Windows\src\...` 找文件并满屏假红 |
+| 测试不再依赖 `process.cwd()` | 从任意目录调用 `test-all.mjs` 时，原会去 `C:\Windows\src\...` 找文件并满屏红 |
+
+### 6.3 防护层规则从 10 条变 12 条（2026-10-28）
+
+上游对同一份防护层做了**两件事**，一次新增、一次删除：
+
+| 项 | 变化 |
+|---|---|
+| 新增 L2 `at-path-hint` | 改写 `Tokens prefixed with @ are paths the user explicitly referenced.` |
+| 新增 L2 `path-root-phrase` | 改写它的搭档句 `Relative paths resolve from the workspace root; …` |
+| 新增 L3 `at-path-hint-loose` | 上一条的容错变体（容忍空白/大小写/标点差异） |
+| **删除** L3 `leading-brand-line` | 用「首行含品牌短语就整体中和」的老规则 |
+
+**这解释了一个此前无法解释的现象。** 旧规则表 10 条**全部围绕品牌短语**
+（`DeepSeek Harness`）。而实测发现的新指纹与品牌毫无关系：那两句
+**单独发任一句都通过，两句同现才 400/11128**，触发要素是 `@` 与 `path` 的
+组合。于是旧规则在 L1/L2/L3 三档改出的内容**完全相同**——一次都没被改写，
+三次都撞同一条上游规则。这正是「已升档 2 次仍未通过」的机制性原因。
+
+> 报错里那句「把起始档位调到 L3（`OFM_TENCENT_GATE_LEVEL=3`）」在逻辑上
+> 不可能有用：`maxEscalations=2` + 起始 L1 ⇒ 自动升档本来就已走完
+> L1→L2→L3。改成起始 L3 只是跳过前两档，终态一模一样。**这条提示是错的。**
+
+**删除 `leading-brand-line` 是安全的**（已实测，不是照抄结论）。它的独有覆盖
+是「品牌短语带零宽/无分隔」的形状：
+
+```
+DeepSeek​Harness is the tool.   L1 不改 → L2 改成 DSH → L3 也改
+DeepSeekHarness is the tool.    L1 不改 → L2 改成 DSH → L3 也改
+```
+
+L2 的 `brand-token-loose` 用可选分隔符的正则接住了它，没有覆盖缺口。
+
+**副本侧的处理**：把 `vendor/upstream/tencent-gate-guard.js` 按安装版重新抽取
+（`DFB86BE7…` → `49F8B733…`），再跑 `merge-guard` 重建产物。函数体仍逐字节
+保留，只有三个宿主名字的绑定差异，这一点由测试守着。
+
+同时修掉两处**写死数字**导致的假红：
+
+| 改动 | 原因 |
+|---|---|
+| `merge-guard.mjs` 的 `rules: 10` 改为从产物实测统计 | 上游改条数后记录当场过时 |
+| `guard.test.mjs` 的「10 条规则」改为「与基线逐条双向比对」 | 写死条数会让「上游加规则」表现为测试失败，而不是基线失同步 |
+| `guard-demo.test.mjs` 的 `'10 条'` 改为读规则表实际长度 | 演示页数字来自规则表，测试却写死 |
+| 新增回归：`@ + path` 指纹 L1 抓不到、靠 L2 升档通过 | 这是本轮唯一的真实缺陷形态，必须有测试钉住 |
+| 新增回归：基线每条规则都进了产物、且不凭空多出 | 防止「整块替换」式补丁静默丢规则（**这次真的发生过**，见下） |
+
+> ⚠️ **顺带发现一个真实的补丁缺陷**：`issue582-codearts-vision/patch-tencent-gate-atpath.mjs`
+> 用 `source.replace(ANCHOR, NEW_RULES)` 做替换，而 `NEW_RULES` 里**没有把
+> `leading-brand-line` 放回去**，于是"追加规则"实际变成了"删除一条、追加三条"。
+> 它自称幂等且只追加。这次删的那条恰好是安全的，但机制本身会静默丢规则——
+> 若哪天锚点落在一条关键规则上，后果是防护静默变弱且没有任何报错。
 
 ---
 
@@ -423,12 +474,12 @@ needsRelogin(entry) → entry?.refreshable === false
 | # | 检查 | 命令 | 期望 |
 |---|---|---|---|
 | 1 | 工作区干净 | `git status --porcelain` | 无输出 |
-| 2 | 全套测试 | `node scripts/test-all.mjs --with-drift` | `PASS 77/77`，exit 0 |
+| 2 | 全套测试 | `node scripts/test-all.mjs --with-drift` | `PASS 79/79`，exit 0 |
 | 3 | 页面未漂移 | `node scripts/extract.mjs --check` | exit 0 |
 | 4 | 防护层未漂移 | `node scripts/merge-guard.mjs --check` | exit 0 |
 | 5 | 令牌未漂移 | `node scripts/extract-theme.mjs --check` | exit 0 |
 | 6 | 渲染树一致 | `node src/test/run.mjs src/test/parity.test.mjs` | `7/7` |
-| 7 | 防护语义 | `node src/test/run.mjs src/test/guard.test.mjs` | `17/17` |
+| 7 | 防护语义 | `node src/test/run.mjs src/test/guard.test.mjs` | `19/19` |
 | 8 | 端到端升档 | `node src/test/run.mjs src/test/guard-demo.test.mjs` | `5/5` |
 | 9 | 页面交互 | `node src/test/run.mjs src/test/behaviour.test.mjs` | `21/21` |
 | 10 | 交付物冒烟 | `node src/test/run.mjs src/test/demo.test.mjs` | `9/9` |
@@ -436,8 +487,8 @@ needsRelogin(entry) → entry?.refreshable === false
 | 12 | **原生 Response 回归** | `node src/test/run.mjs src/test/native-response.test.mjs` | `6/6` |
 | 13 | 依赖不入库 | `git ls-files \| grep -c node_modules` | `0` |
 | 14 | 无凭据 | `git grep -E "ghp_\|sk-[A-Za-z0-9]{32}"` | 无匹配 |
-| 15 | 干净克隆可跑 | 新 clone 后直接 `node scripts/test-all.mjs` | 自动装依赖后 `77/77` |
-| 16 | **与工作目录无关** | 在 `C:\Windows` 等任意目录执行 `node <repo>/scripts/test-all.mjs --no-build` | 同样 `77/77`（测试不得依赖 `process.cwd()`） |
+| 15 | 干净克隆可跑 | 新 clone 后直接 `node scripts/test-all.mjs` | 自动装依赖后 `79/79` |
+| 16 | **与工作目录无关** | 在 `C:\Windows` 等任意目录执行 `node <repo>/scripts/test-all.mjs --no-build` | 同样 `79/79`（测试不得依赖 `process.cwd()`） |
 
 **如果你发现任何一条与上表不符，那就是真问题，请直接指出命令与输出。**
 **如果你发现上表"期望值"本身写错了（例如某条测试其实是空断言），那更有价值——请说明理由。**

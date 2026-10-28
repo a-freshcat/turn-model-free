@@ -99,12 +99,32 @@ var TENCENT_GATE_RULES = [
     note: "首句若在自称「某客户端」，换成中性表述；只动开头，正文不碰"
   },
   {
-    id: "leading-brand-line",
+    id: "at-path-hint",
+    level: 2,
+    // 实测指纹（issue #582 追踪中发现，2026-10-28）：
+    //   "Tokens prefixed with @ are paths the user explicitly referenced."
+    //   与 "Relative paths resolve from the workspace root; ..." 同时出现即 400/11128。
+    // 触发要素是「@ + path 词」，与品牌无关；去掉任一即通过（已实测）。
+    // 改写为等价表述，语义不变，但不含 @ 与 "paths" 的组合。
+    find: /Tokens prefixed with @ are paths the user explicitly referenced\./g,
+    replace: "At-prefixed tokens denote files the user referenced explicitly.",
+    note: "实测：@ + path 组合触发 11128；去掉 @ 或 path 即通过"
+  },
+  {
+    id: "path-root-phrase",
+    level: 2,
+    // 上一条的搭档句。单发本句 OK，与上句同现才 400，因此两条必须一起改。
+    find: /Relative paths resolve from the workspace root; absolute paths identify files or directories on the host\./g,
+    replace: "Relative paths resolve against the project root; absolute ones identify entries on the host machine.",
+    note: "与 at-path-hint 联动；单句不触发，同现才拦"
+  },
+  {
+    id: "at-path-hint-loose",
     level: 3,
-    leading: true,
-    find: new RegExp("^(?:\\uFEFF)?[ \\t]*[^\\n]*?" + TG_BRAND_LOOSE + "[^\\n]*?[.!?](?=[ \\t]|$)"),
-    replace: "You are a coding assistant.",
-    note: "首行含品牌短语时整体中和（防上游按「首行」取样）"
+    // L3 兜底：容忍空白/大小写/标点差异（例如上游文案微调或多空格）。
+    find: /Tokens\s+prefixed\s+with\s+@\s+are\s+path[s]?\s+the\s+user\s+explicitly\s+referenced[^\n]{0,40}/gi,
+    replace: "At-prefixed tokens denote files the user referenced explicitly.",
+    note: "同上，容错变体"
   }
 ];
 /**

@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { installGlobals } from '../runtime/mini-dom.mjs'
+import { TENCENT_GATE_RULES } from '../guard/tencent-gate.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..', '..')
@@ -46,7 +47,9 @@ export default {
           demo.guardLab.start(document)
           const root = document.getElementById('guard-lab')
           assert.includes(root.textContent, '防护规则')
-          assert.includes(root.textContent, '10 条')
+          // 不写死条数：上游 2026-10-28 把它从 10 条改成 12 条，
+          // 写死就会在没有任何真实缺陷时变红。改为断言"显示的数字与规则表一致"。
+          assert.match(root.textContent, new RegExp(`防护规则\\s*${TENCENT_GATE_RULES.length}\\s*条`), `状态栏显示 ${TENCENT_GATE_RULES.length} 条`)
           assert.includes(root.textContent, '升档预算')
           assert.includes(root.textContent, '最多 2 次')
           const textarea = root.querySelector('textarea')

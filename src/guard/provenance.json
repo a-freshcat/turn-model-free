@@ -1,13 +1,13 @@
 {
   "source": "vendor/upstream/tencent-gate-guard.js",
   "upstreamOrigin": "dsh-our-free-model@2.5.4 vendor/channel-pack/pack.js（抽取件）",
-  "sourceSha256": "dfb86be77bcf451b6fa4629d5591bcf80903b3cda82018736b4d66e6d625baed",
-  "sourceBytes": 19679,
-  "mergedBytes": 21331,
-  "mergedSha256": "4d4ea38503b6fe7fbcc2eae126f3ac2219a94e62501512822f581e122d3ed4c6",
+  "sourceSha256": "49f8b73315e35624d14e7cbae74193d03877d2a0f68b115d6297a4c38465636d",
+  "sourceBytes": 20649,
+  "mergedBytes": 22301,
+  "mergedSha256": "df87bc4d7f2c245558d7a6f0fe8ddfb7e8089ef456a97bc4ac82a5a80cce2935",
   "packageVersion": "2.5.4",
   "installPackSha256": "9b6d430a51bd047534bba4608024a5e571e277fa8b9534cb143f0db119b544cc",
-  "rules": 10,
+  "rules": 12,
   "defaultMaxEscalations": 2,
   "rewrites": [
     {

@@ -1,0 +1,54 @@
+防护层跟进上游 12 条规则：补 @+path 指纹（这是 buddy 11128 的真因）
+
+## 结论：这个漏洞在副本里存在，已修
+
+上游 2026-10-28 对同一份防护层做了两件事：新增 3 条规则、删除 1 条。
+副本基线停在 10 条（10-26 抽取），因此缺这 3 条。
+
+缺的规则对应的正是 buddy 一直报 11128 的根因。旧 10 条规则全部围绕
+品牌短语「DeepSeek Harness」，而实测指纹与品牌无关：
+
+    Tokens prefixed with @ are paths the user explicitly referenced.
+    Relative paths resolve from the workspace root; absolute paths identify
+    files or directories on the host.
+
+单发任一句都通过，两句同现才 400/11128；触发要素是 @ 与 path 的组合。
+于是旧规则在 L1/L2/L3 三档改出的内容完全相同——一次都没改写，
+三次都撞同一条上游规则。这就是「已升档 2 次仍未通过」的机制性原因，
+也说明报错里「把起始档位调到 L3」这条建议不可能有用：
+maxEscalations=2 + 起始 L1 本来就走完 L1→L2→L3。
+
+## 改了什么
+
+- vendor/upstream/tencent-gate-guard.js 按安装版重新抽取
+  DFB86BE7… → 49F8B733…（规则 10 → 12，新增 at-path-hint /
+  path-root-phrase / at-path-hint-loose，按上游删掉 leading-brand-line）
+- 重跑 merge-guard 重建 src/guard/tencent-gate.js；函数体仍逐字节
+  保留，只有三个宿主名字的绑定差异（df87bc4d…）
+- 顺带跟进 client.js 的又一次改动（1b16b564…），页面切片 91208 字符
+
+## 验证
+
+- L1 不改这两句、L2 改写、端到端管道 L1 被拒 → 升到 L2 → 通过
+- 删除 leading-brand-line 是安全的（实测，非照抄）：它的独有覆盖是
+  「品牌短语带零宽/无分隔」，L2 的 brand-token-loose 已接住，
+  DeepSeek\u200BHarness / DeepSeekHarness 在 L2 都会改成 DSH
+- 反向验证：让 L2 两条 find 失效 → 端到端测试变红（18/19）；
+  把三条新规则改名 → 双向比对测试变红
+
+## 顺带修掉四处「写死数字」导致的假红
+
+上游一改条数，这些断言就会在没有任何真实缺陷时变红：
+- merge-guard.mjs 的 rules: 10 → 从产物实测统计
+- guard.test.mjs「10 条规则」→ 与基线逐条双向比对（不丢不多、顺序一致）
+- guard-demo.test.mjs「10 条」→ 读规则表实际长度
+
+## 记录一个真实缺陷（不在本仓库，但值得记）
+
+issue582-codearts-vision/patch-tencent-gate-atpath.mjs 用
+source.replace(ANCHOR, NEW_RULES) 替换，而 NEW_RULES 没把
+leading-brand-line 放回去，于是「追加规则」实际是「删一条、加三条」。
+它自称幂等且只追加。这次删的那条恰好安全，但机制会静默丢规则。
+已写进 CHECKLIST §6.3。
+
+全量 79/79 通过，--with-drift 退出码 0，任意目录执行同样通过。
