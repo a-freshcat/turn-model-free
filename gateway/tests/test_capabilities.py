@@ -160,5 +160,51 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("balanceError", page)
 
 
+class LauncherPortTests(unittest.TestCase):
+    """本机监听地址不能落在 8000。
+
+    8000 是本机另一个 Web 插件面板的位置。撞上去时 `serve()` bind 失败退出，
+    用户看到的只是一句「Cannot start the loopback listener」——但 8000 上跑着的
+    其实是别的服务，很容易被当成这个面板自己起坏了。这里锁住默认值与启动脚本
+    里写的那个数字，避免下次改动又把它挪回去。
+    """
+
+    def setUp(self):
+        self.root = Path(__file__).resolve().parent.parent
+
+    def test_default_port_is_not_shared_with_other_panels(self):
+        source = (self.root / "launch_web.py").read_text(encoding="utf-8")
+        self.assertIn("DEFAULT_PORT = 8199", source)
+        self.assertIn("default=DEFAULT_PORT", source)
+        self.assertNotIn("default=8000", source)
+
+    def test_launcher_cmd_passes_the_port_explicitly(self):
+        """地址要能在命令里一眼看到，而不是埋在工作目录的某个默认值里。"""
+        script = (self.root / "launch-web.cmd").read_text(encoding="utf-8")
+        self.assertIn('set "GATEWAY_PORT=8199"', script)
+        self.assertIn("--port %GATEWAY_PORT%", script)
+
+    def test_run_ps1_agrees_with_the_launcher(self):
+        script = (self.root / "run.ps1").read_text(encoding="utf-8")
+        self.assertIn("[int]$Port = 8199", script)
+
+    def test_root_entry_points_at_the_gateway_launcher(self):
+        """根目录的 `launch-web.cmd` 是双击入口，必须继续转发，不能自己再写一份端口。
+
+        两份端口各自漂移是这类脚本最容易出的问题：改了一处、另一处还是旧的。
+
+        这个文件只存在于发布仓库（`free-m-clone/` 根），源目录没有它。不存在时
+        跳过——「这次没验证」，不是「验证通过」。
+        """
+        entry = self.root.parent / "launch-web.cmd"
+        if not entry.is_file():
+            self.skipTest("根目录没有 launch-web.cmd（源目录形态）")
+        script = entry.read_text(encoding="utf-8")
+        self.assertIn(r"gateway\launch-web.cmd", script)
+        self.assertIn("8199", script)
+        # 不该自己调用 python —— 那就成了第二份启动逻辑。
+        self.assertNotIn("launch_web.py", script)
+
+
 if __name__ == "__main__":
     unittest.main()

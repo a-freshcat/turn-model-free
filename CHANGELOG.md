@@ -1,5 +1,43 @@
 # 版本变更
 
+## v1.2.4 — 2026-11-05
+
+换掉本机监听地址。默认端口从 **8000** 改为 **8199**。
+
+### 为什么换
+
+8000 是本机另一个 Web 插件面板的地址，两边撞在一起时很难分辨到底是谁起失败：
+`launch_web.py` 的 `serve()` 先自己 bind socket，占不到就打印一句
+`Cannot start the loopback listener (OS error …); try another --port.` 然后退出。
+而那个 8000 上跑着的其实是别的服务——页面打得开，只是不是这个面板。
+
+### 改了什么
+
+- `launch_web.py`：新增 `DEFAULT_PORT = 8199`，`--port` 的默认值改为引用它。
+  帮助文本也跟着显示 `(default: 8199)`。
+- `launch-web.cmd`：把地址显式写成 `set "GATEWAY_PORT=8199"` 并传给
+  `launch_web.py --port %GATEWAY_PORT%`。**地址写在命令里，看一眼就知道面板在哪**，
+  不再埋在工作目录某处的默认值里。换端口仍然是一条 `--port 8300`。
+- `run.ps1`：`$Port` 默认值同步为 8199。
+- 根目录 `launch-web.cmd`（双击入口）补注释说明地址在哪，仍然只做转发，
+  不自己再写一份端口——两份端口各自漂移是这类脚本最容易出的问题。
+- README 里所有 `127.0.0.1:8000` 示例同步改为 `8199`，`--port 8001` 改为 `--port 8200`。
+
+### 不受影响的部分
+
+- Antigravity 的 OAuth 回调地址由运行时端口算出
+  （`http://localhost:<port>/oauth-callback`），没有写死，改端口后仍能回跳。
+- 插件自己的 OpenAI 兼容网关仍是 8326，与本次改动无关。
+- 网关密钥、账号表、`.gateway-auth/` 的位置都没变，换端口不需要重新登录。
+
+### 测试
+
+新增 `LauncherPortTests`（4 项），锁住默认端口不是 8000、启动脚本显式传端口、
+`run.ps1` 与启动器一致、根目录入口只转发不含第二份启动逻辑。
+
+源目录 `127 passed, 2 skipped`（其中一项是「根目录没有 launch-web.cmd」的形态跳过），
+`gateway/` 镜像 `128 passed, 1 skipped`。
+
 ## v1.2.3 — 2026-11-05
 
 修掉三个让「账号在、按钮在，却什么都不对」的根因。三者都跟界面无关，都是桥接

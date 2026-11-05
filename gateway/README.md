@@ -72,7 +72,7 @@ Antigravity 候选项目、稳定性证据及尚未实测的边界见
 ## 3. 本机启动（PowerShell）
 
 也可以直接双击 `launch-web.cmd`：已有 accounts.json 时加载真实配置，否则启动模拟号池，等本机服务就绪后打开
-`http://127.0.0.1:8000/`，显示与本地 free-m-clone 相同的渠道卡、图标、折叠列表和昼夜风格。
+`http://127.0.0.1:8199/`，显示与本地 free-m-clone 相同的渠道卡、图标、折叠列表和昼夜风格。
 启动器通过一次性入口自动建立管理会话；直接访问地址时，可输入启动窗口显示的网关密钥。
 原件位于 `C:\Users\handsomeboys\Documents\deepseek-harness\repair_question\free-m-clone`，
 8 个复用文件按原字节保存在 web/vendor/free-m-clone，哈希清单见其 provenance.json。
@@ -89,7 +89,7 @@ Gemini 卡片已替换为 Antigravity，保持原卡片样式。点击「添加�
 
 ```cmd
 launch-web.cmd
-launch-web.cmd --port 8001
+launch-web.cmd --port 8200
 launch-web.cmd --real
 ```
 
@@ -123,7 +123,7 @@ $env:GATEWAY_API_KEY = "local-development-key"
 $env:PYTHONPATH = (Join-Path (Get-Location) ".vendor")
 $env:GATEWAY_ACCOUNTS = (Join-Path (Get-Location) "accounts.demo.json")
 $env:GATEWAY_API_KEY = "local-development-key"
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+python -m uvicorn main:app --host 127.0.0.1 --port 8199 --workers 1
 ```
 
 虚拟环境中无需 PYTHONPATH，把 python 换成对应环境解释器即可。
@@ -138,13 +138,13 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 另开 PowerShell 进入项目目录。Windows 使用 `curl.exe`，避免旧版 PowerShell 同名别名：
 
 ```powershell
-curl.exe --noproxy "*" --fail-with-body --max-time 15 http://127.0.0.1:8000/healthz
+curl.exe --noproxy "*" --fail-with-body --max-time 15 http://127.0.0.1:8199/healthz
 
-curl.exe --noproxy "*" --fail-with-body --max-time 30 http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer local-development-key" -H "Content-Type: application/json" --data-binary "@examples/chat.json"
+curl.exe --noproxy "*" --fail-with-body --max-time 30 http://127.0.0.1:8199/v1/chat/completions -H "Authorization: Bearer local-development-key" -H "Content-Type: application/json" --data-binary "@examples/chat.json"
 
-curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer local-development-key" -H "Content-Type: application/json" --data-binary "@examples/stream.json"
+curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8199/v1/chat/completions -H "Authorization: Bearer local-development-key" -H "Content-Type: application/json" --data-binary "@examples/stream.json"
 
-curl.exe --noproxy "*" --fail-with-body --max-time 15 http://127.0.0.1:8000/admin/accounts -H "Authorization: Bearer local-development-key"
+curl.exe --noproxy "*" --fail-with-body --max-time 15 http://127.0.0.1:8199/admin/accounts -H "Authorization: Bearer local-development-key"
 ```
 
 非流式返回 `chat.completion`；流式返回 `text/event-stream`，包含
@@ -157,10 +157,10 @@ Linux/macOS：
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 GATEWAY_API_KEY=local-development-key GATEWAY_ACCOUNTS=accounts.demo.json \
-  .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+  .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8199 --workers 1
 
 curl --noproxy '*' --fail-with-body --max-time 30 -N \
-  http://127.0.0.1:8000/v1/chat/completions \
+  http://127.0.0.1:8199/v1/chat/completions \
   -H 'Authorization: Bearer local-development-key' \
   -H 'Content-Type: application/json' \
   --data-binary @examples/stream.json

@@ -14,6 +14,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# 默认端口。8000 是本机另一个 Web 插件面板的地址，两边撞在一起时很难分辨
+# 到底是谁起失败了，所以这里换一个不会被别的东西占的位置。
+DEFAULT_PORT = 8199
+
 
 def _check_health(url: str) -> bool:
     try:
@@ -111,7 +115,13 @@ async def serve(port: int, *, no_browser: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--real", action="store_true", help="Use accounts.json or GATEWAY_ACCOUNTS")
-    parser.add_argument("--port", type=int, default=8000, help="Loopback port (default: 8000)")
+    # 默认端口刻意不用 8000：那是很多本机 Web 工具抢的位置（本机另一个
+    # 插件面板就占着它）。撞上时 `serve()` 会 bind 失败退出，用户看到的只是
+    # 一句「Cannot start the loopback listener」——但那个 8000 上跑着的其实是
+    # 别的服务，很容易被当成这个面板自己起坏了。
+    # 8199 落在 8000~8999 的常规开发端口段，且与插件自身的 8326 错开。
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"Loopback port (default: {DEFAULT_PORT})")
     parser.add_argument("--no-browser", action="store_true", help="Start without opening a browser")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
