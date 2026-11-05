@@ -353,6 +353,175 @@ class MergedViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class PluginProbeFailureTranslationTests(unittest.TestCase):
+    """探活失败必须说真话，并且说清是哪个账号。
+
+    这组对应一个真实报障：buddy 渠道只有一个账号，测试报
+
+      测试失败：无法确认：buddy: 全部账号均被服务端安全策略拦截（HTTP 403，已逐个换号重试）。
+      该拦截按账号生效（同一请求在其他账号可正常返回），请在 Channel Pack 停用或更换被拦账号：
+      账号存在异常行为，已被限制使用 request illegal
+
+    其中「全部账号均被…已逐个换号重试」「同一请求在其他账号可正常返回」两句是
+    pack.js 自己写死的（`contentRejectionError(..., true)`），而这个渠道**只有
+    一个账号、一次换号都没发生**——两句话都在说一件没发生过的事。用户拿到的
+    信息是零：不知道是哪个号、不知道要不要重试、不知道有没有别的号可换。
+
+    真实的上游裁定（2026-11 实测同一台机器上的 5 个 buddy 凭据）：
+      2 个 HTTP 200、3 个 HTTP 403 `{"code":11140,"msg":"request illegal",
+      "retry_policy":{"retry":false},"displayMsg":{"zh":"账号存在异常行为，已被限制使用"}}`
+    —— 按账号生效，不是按 IP、不是按渠道。
+    """
+
+    REAL_MESSAGE = (
+        "无法确认：buddy: 全部账号均被服务端安全策略拦截（HTTP 403，已逐个换号重试）。"
+        "该拦截按账号生效（同一请求在其他账号可正常返回），请在 Channel Pack 停用或更换被拦账号："
+        "账号存在异常行为，已被限制使用 request illegal")
+
+    def translate(self, total=1, usable=1, message=None, nickname="153****9148"):
+        from web_api import explain_plugin_probe_failure
+        return explain_plugin_probe_failure(
+            {"accountId": "buddy-7a118532", "modelId": "hy4-preview", "ok": False,
+             "nickname": nickname, "message": message or self.REAL_MESSAGE},
+            account_id="buddy-7a118532", provider="buddy", nickname=nickname,
+            total=total, usable=usable)
+
+    def test_single_account_channel_never_claims_rotation(self):
+        result = self.translate(total=1)
+        self.assertEqual(result["code"], "account-restricted")
+        self.assertFalse(result["retryable"])
+        self.assertTrue(result["restricted"])
+        self.assertNotIn("已逐个换号重试", result["message"])
+        self.assertNotIn("全部账号均被", result["message"])
+        self.assertNotIn("在其他账号可正常返回", result["message"])
+        # 没有别的号可换，就必须直说，而不是让用户去点「停用或更换」。
+        self.assertIn("只有这 1 个账号", result["message"])
+        self.assertIn("没有可换的号", result["message"])
+
+    def test_message_names_the_account_and_the_verdict(self):
+        message = self.translate(total=1)["message"]
+        self.assertIn("153****9148", message)
+        self.assertIn("buddy-7a118532", message)
+        self.assertIn("账号存在异常行为，已被限制使用", message)
+        self.assertIn("HTTP 403", message)
+        self.assertIn("retry_policy.retry=false", message)
+
+    def test_multi_account_channel_still_reports_the_count(self):
+        result = self.translate(total=3, usable=2)
+        self.assertEqual(result["code"], "account-restricted")
+        self.assertIn("共 3 个账号", result["message"])
+        self.assertIn("2 个还在调度里", result["message"])
+        self.assertNotIn("只有这 1 个账号", result["message"])
+
+    def test_unknown_channel_size_does_not_promise_a_spare_account(self):
+        result = self.translate(total=None, usable=None)
+        self.assertEqual(result["code"], "account-restricted")
+        self.assertNotIn("换号", result["message"])
+        self.assertIn("账号级限制", result["message"])
+
+    def test_channel_verification_is_retryable_and_not_an_account_problem(self):
+        """11128 与 11140 共用 `msg: "request illegal"`，只能靠中文文案分开。"""
+        result = self.translate(message=(
+            "无法确认：buddy: 上游仍以渠道校验拒绝（code 11128），已升档 3 次仍未通过。"
+            "请在 Channel Pack 里检查账号状态，或在设置里把起始档位调到 L3。"))
+        self.assertEqual(result["code"], "channel-verification")
+        self.assertTrue(result["retryable"])
+        self.assertFalse(result["restricted"])
+        self.assertIn("11128", result["message"])
+        # 插件已经升档重发过了，不能再叫用户「重发一次」。
+        self.assertIn("升到最高档", result["message"])
+        self.assertNotIn("原样重发一次", result["message"])
+
+    def test_plain_gate_block_asks_for_a_resend(self):
+        result = self.translate(message="无法确认：workbuddy: 请求被拦截，请重新发送 request illegal")
+        self.assertEqual(result["code"], "channel-verification")
+        self.assertIn("原样重发一次", result["message"])
+
+    def test_expired_credential_points_at_relogin(self):
+        result = self.translate(message="buddy: 所有账号均被拒绝（HTTP 401，请在 Channel Pack 重新登录）：token expired")
+        self.assertEqual(result["code"], "credential-expired")
+        self.assertFalse(result["retryable"])
+        self.assertIn("重新登录", result["message"])
+
+    def test_successful_probe_is_returned_untouched(self):
+        from web_api import explain_plugin_probe_failure
+        value = {"accountId": "a", "modelId": "hy4-preview", "ok": True}
+        self.assertIs(explain_plugin_probe_failure(value, account_id="a"), value)
+
+    def test_unrecognised_failure_is_not_rewritten(self):
+        """认不出类别就不编故事——只撤掉那条已被证伪的换号声明。"""
+        message = "无法确认：buddy: 上游超时（HTTP 504，已逐个换号重试）"
+        result = self.translate(total=1, message=message)
+        self.assertEqual(result["message"], "无法确认：buddy: 上游超时（HTTP 504）")
+        self.assertNotIn("code", result)
+
+
+class PluginRateLimitStateTests(unittest.IsolatedAsyncioTestCase):
+    """账号被上游限制后，看板必须显示「冷却」，而不是「正常」。
+
+    pack.js 在上游回 403 + 11140 时会给这个账号写一条 30 分钟的
+    `modelRateLimits`（`BUDDY_POLICY_BLOCK_COOLDOWN_MS`），期间它不参与选号。
+    看板原先完全不读这张表：测试失败、真实对话也发不出去，账号却显示「正常」。
+    """
+
+    def test_live_limits_are_kept_and_expired_ones_dropped(self):
+        from web_api import live_rate_limits
+        now = 1_000_000
+        entry = {"modelRateLimits": {"hy4-preview": now + 60_000,
+                                     "deepseek-v4-flash": now - 1}}
+        self.assertEqual(live_rate_limits(entry, now), {"hy4-preview": float(now + 60_000)})
+
+    def test_missing_or_malformed_limits_are_ignored(self):
+        from web_api import live_rate_limits
+        self.assertEqual(live_rate_limits({}, 0), {})
+        self.assertEqual(live_rate_limits({"modelRateLimits": None}, 0), {})
+        self.assertEqual(live_rate_limits({"modelRateLimits": {"m": "soon"}}, 0), {})
+        self.assertEqual(live_rate_limits({"modelRateLimits": {"m": True}}, 0), {})
+
+    async def test_account_row_reports_cooldown_seconds(self):
+        """插件账号处于冷却时，行的 status 必须是 cooldown 且带剩余秒数。"""
+        from account_manager import AccountManager
+        from config import Settings
+        from main import app
+        from upstream_client import UpstreamClient
+        import time as _time
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name) / "accounts.json"
+        path.write_text('{"accounts":[]}', encoding="utf-8")
+        pool = AccountManager(Settings(accounts=[]))
+        upstream = UpstreamClient(lambda a: httpx.MockTransport(lambda r: httpx.Response(200)))
+        web = WebManager(pool, path, upstream)
+        self.addAsyncCleanup(web.bridge.aclose)
+        self.addAsyncCleanup(upstream.aclose)
+
+        reset_at = int(_time.time() * 1000) + 1_800_000
+
+        class _Bridge:
+            async def call(inner, method, payload, attempts=5):
+                if method == "account.list":
+                    return {"accounts": [
+                        {"id": "buddy-live", "nickname": "埃尔温", "enabled": True,
+                         "modelRateLimits": {"hy4-preview": reset_at}},
+                        {"id": "buddy-dead", "nickname": "153****9148", "enabled": True,
+                         "modelRateLimits": {"hy4-preview": 1}},
+                    ]}
+                raise AssertionError(method)
+
+            async def aclose(inner):
+                pass
+
+        web.bridge = _Bridge()
+        rows = {row["id"]: row for row in await web.plugin_accounts("buddy")}
+        self.assertEqual(rows["buddy-live"]["status"], "cooldown")
+        self.assertGreater(rows["buddy-live"]["cooldown_remaining_seconds"], 1700)
+        self.assertEqual(rows["buddy-live"]["rate_limited_models"], ["hy4-preview"])
+        # 过期的标记不能把账号一直挂在冷却里。
+        self.assertEqual(rows["buddy-dead"]["status"], "active")
+        self.assertEqual(rows["buddy-dead"]["cooldown_remaining_seconds"], 0)
+
+
 class ChatRoutingTests(unittest.IsolatedAsyncioTestCase):
     """对话路由：插件模型转发，未知模型 404，插件挂了 503。"""
 

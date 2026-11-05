@@ -5,12 +5,18 @@ let accounts = []
 let selected = new URLSearchParams(location.search).get('account') || ''
 let activeGroup = new URLSearchParams(location.search).get('group') || 'all'
 let dark = localStorage.getItem('gateway:theme') === 'dark'
+const expandedPackages = new Set()
 
+// 渠道名以插件自己的注册表为准（`channel-runtime.js` 的 CHANNELS 表：
+// `buddy` → 「WorkBuddy 国内版」· copilot.tencent.com，`workbuddy` →
+// 「WorkBuddy 国际版」· workbuddy.ai）。这两家原先在这里**写反了**：国内版挂到
+// `workbuddy`、国际版挂到 `buddy`，于是看板上每个账号的分组标签都指向另一家。
+// 域名放 title，标签保持短——两个中文名只差一个字，靠域名才能一眼分清。
 const CHANNEL_LABELS = {
   antigravity: 'Gemini 自用',
   gemini: 'Gemini 独立池',
-  workbuddy: 'WorkBuddy 国内版',
-  buddy: 'CodeBuddy 国际版',
+  buddy: 'WorkBuddy 国内版',
+  workbuddy: 'WorkBuddy 国际版',
   codearts: '华为云 CodeArts',
   lobsterai: '有道 LobsterAI',
   qoder: '阿里 Qoder',
@@ -21,6 +27,23 @@ const CHANNEL_LABELS = {
   raccoon: '商汤 Raccoon',
   minimax: 'MiniMax Code',
   zcode: '智谱 ZCode',
+}
+
+const CHANNEL_HINTS = {
+  antigravity: '本机 OAuth 目录 · 三个配额池',
+  gemini: '本机 OAuth 目录 · 独立池',
+  buddy: '腾讯 · copilot.tencent.com（CodeBuddy 同一端点，国内版账号）',
+  workbuddy: '腾讯 · workbuddy.ai（国际版端点，独立账号与积分体系）',
+  codearts: '华为云 · CodeArts',
+  lobsterai: '有道 · LobsterAI',
+  qoder: '阿里 · qoder.com',
+  qodercn: '阿里 · qoder.com.cn',
+  trae: '字节 · TRAE',
+  cline: 'Cline 官方端点',
+  loomy: '讯飞 · Loomy',
+  raccoon: '商汤 · Raccoon',
+  minimax: 'MiniMax · Code',
+  zcode: '智谱 · bigmodel.cn / z.ai',
 }
 
 const el = (tag, className, textContent) => {
@@ -212,6 +235,20 @@ function buildExternalUsageCard(account) {
   // 侧信息，不该占掉这一栏的主位。没有读数时才退回并发负载卡片，并把原因
   // 写在脚注里——空卡片（不解释为什么空）和「额度已用光」看起来一样。
   if (packages.length > 0) {
+    let sumTotal = 0
+    let sumRemaining = 0
+    let hasTotals = false
+    for (const pack of packages) {
+      if (Number.isFinite(pack.total) && pack.total > 0 && Number.isFinite(pack.remaining)) {
+        sumTotal += pack.total
+        sumRemaining += pack.remaining
+        hasTotals = true
+      }
+    }
+    const overallRemainPct =
+      hasTotals && sumTotal > 0 ? Math.max(0, Math.min(100, (sumRemaining / sumTotal) * 100)) : null
+
+    const isOpen = expandedPackages.has(account.id)
     const head = el('div', 'usage-card-head')
     const titleWrap = el('div', 'usage-card-title')
     titleWrap.append(el('strong', 'usage-pool-name', '剩余积分'))
@@ -223,11 +260,44 @@ function buildExternalUsageCard(account) {
     const metricWrap = el('div', 'usage-card-metrics')
     metricWrap.append(
       el('span', 'usage-used-label', `共 ${fmtNumber(balance.total)} ${unit}`),
-      el('span', 'usage-remain-pill', `并发 ${inFlight}/${maxC}`)
+      el(
+        'span',
+        'usage-remain-pill',
+        overallRemainPct !== null ? `剩余 ${percentRemaining(overallRemainPct)}` : `并发 ${inFlight}/${maxC}`
+      )
     )
+
+    // Header collapse arrow button for quick expand/collapse of packages
+    const arrowBtn = el('button', 'pkg-arrow-btn')
+    arrowBtn.type = 'button'
+    arrowBtn.setAttribute('aria-expanded', String(isOpen))
+    arrowBtn.title = isOpen ? '收起套餐明细' : '展开套餐明细'
+    arrowBtn.setAttribute('aria-label', isOpen ? '收起套餐明细' : '展开套餐明细')
+    const arrowIcon = el('span', 'pkg-chevron', '▾')
+    arrowIcon.setAttribute('aria-hidden', 'true')
+    arrowBtn.append(arrowIcon)
+    metricWrap.append(arrowBtn)
+
     head.append(titleWrap, metricWrap)
     card.append(head)
 
+    if (overallRemainPct !== null) {
+      card.append(createUsageBar(overallRemainPct, `${account.name || '账号'} 剩余积分比例`))
+    }
+
+    const details = el('details', 'usage-details pkg-details')
+    details.open = isOpen
+    const summary = el('summary', 'pkg-summary')
+    const summaryLeft = el('span', 'pkg-summary-label', `套餐明细（${packages.length} 个套餐）`)
+    const summaryRight = el('span', 'pkg-summary-toggle')
+    const summaryActionText = el('span', 'pkg-summary-state', isOpen ? '收起' : '展开')
+    const summaryChevron = el('span', 'pkg-chevron', '▾')
+    summaryChevron.setAttribute('aria-hidden', 'true')
+    summaryRight.append(summaryActionText, summaryChevron)
+    summary.append(summaryLeft, summaryRight)
+    details.append(summary)
+
+    const pkgList = el('div', 'quota-models pkg-list-body')
     for (const pack of packages) {
       const pkgTotal = Number.isFinite(pack.total) ? pack.total : null
       const pkgRemaining = Number.isFinite(pack.remaining) ? pack.remaining : null
@@ -240,15 +310,38 @@ function buildExternalUsageCard(account) {
         el('span', 'quota-model-name', pack.name || '积分包'),
         el('strong', '', pkgRemaining === null
           ? '未知'
-          : `${fmtNumber(pkgRemaining)}${pack.unit ? ' ' + pack.unit : ''}`)
+          : pkgTotal !== null
+            ? `${fmtNumber(pkgRemaining)} / ${fmtNumber(pkgTotal)}${pack.unit ? ' ' + pack.unit : ''}`
+            : `${fmtNumber(pkgRemaining)}${pack.unit ? ' ' + pack.unit : ''}`)
       )
       row.append(rowHead)
       if (remainPct !== null) row.append(createUsageBar(remainPct, `${pack.name} 剩余`))
       // 到期时间只对会过期的包有意义（Bonus Pack 之类）。
       const expiry = pack.expiredTime || pack.cycleEndTime || ''
       if (expiry) row.append(el('div', 'quota-small', `有效期至 ${expiry}`))
-      card.append(row)
+      pkgList.append(row)
     }
+    details.append(pkgList)
+
+    const syncToggleState = openState => {
+      if (openState) expandedPackages.add(account.id)
+      else expandedPackages.delete(account.id)
+      arrowBtn.setAttribute('aria-expanded', String(openState))
+      arrowBtn.title = openState ? '收起套餐明细' : '展开套餐明细'
+      arrowBtn.setAttribute('aria-label', openState ? '收起套餐明细' : '展开套餐明细')
+      summaryActionText.textContent = openState ? '收起' : '展开'
+    }
+
+    details.addEventListener('toggle', () => {
+      syncToggleState(details.open)
+    })
+
+    arrowBtn.addEventListener('click', () => {
+      details.open = !details.open
+      syncToggleState(details.open)
+    })
+
+    card.append(details)
 
     if (account.balanceError) {
       card.append(el('p', 'ofm_balanceerror quota-account-error', account.balanceError))
@@ -342,7 +435,15 @@ function buildStatusBadge(account) {
   if (st === 'disabled') return el('span', 'status-pill paused', '暂停')
   if (st === 'reauth') return el('span', 'status-pill err', '需重登')
   const sec = account.cooldown_remaining_seconds
-  return el('span', 'status-pill warn', sec ? `冷却 ${sec}s` : '冷却中')
+  // 秒数只在短冷却里可读。上游 403/11140 写的是 30 分钟冷却，1800s 这种写法
+  // 用户得自己换算；超过两分钟就换成分钟。
+  const text = sec ? (sec >= 120 ? `冷却 ${Math.ceil(sec / 60)} 分钟` : `冷却 ${sec}s`) : '冷却中'
+  const badge = el('span', 'status-pill warn', text)
+  const models = account.rate_limited_models
+  if (Array.isArray(models) && models.length) {
+    badge.title = `受限/限流的模型：${models.join('、')}`
+  }
+  return badge
 }
 
 function buildScheduleSwitch(account) {
@@ -374,10 +475,13 @@ function buildScheduleSwitch(account) {
 function buildGroupBadge(account) {
   const provider = account.provider || (account.driver === 'antigravity' ? 'antigravity' : 'buddy')
   const label = CHANNEL_LABELS[provider] || provider
-  if (provider === 'antigravity' || provider === 'gemini') {
-    return el('span', 'group-pill gemini-group', `☁ ${label}`)
-  }
-  return el('span', 'group-pill ext-group', `◎ ${label}`)
+  const hint = CHANNEL_HINTS[provider]
+  const badge = provider === 'antigravity' || provider === 'gemini'
+    ? el('span', 'group-pill gemini-group', `☁ ${label}`)
+    : el('span', 'group-pill ext-group', `◎ ${label}`)
+  // 两个中文名只差一个字，域名要能追问到——顺手把渠道 id 也带上，便于对照日志。
+  badge.title = [hint || '插件渠道', `渠道 id：${provider}`].join(' · ')
+  return badge
 }
 
 function renderSummaryPills(visible) {

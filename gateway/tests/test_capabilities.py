@@ -160,6 +160,27 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("balanceError", page)
 
 
+    async def test_quota_board_labels_the_two_tencent_channels_correctly(self):
+        """`buddy` 是国内版、`workbuddy` 是国际版，不能写反。
+
+        用户报障：「在配额界面中 codebuddy 会被显示为国际版，workbuddy 反倒是
+        变成了国内版」。原先看板就是这么写的：`workbuddy: 'WorkBuddy 国内版'`、
+        `buddy: 'CodeBuddy 国际版'`，两家对调。以插件自己的注册表为准
+        （`web/channel-runtime.js` 的 CHANNELS 表：buddy → copilot.tencent.com，
+        workbuddy → workbuddy.ai）。
+        """
+        page = (await self.client.get("/assets/quota.mjs")).text
+        labels = page.split("const CHANNEL_HINTS", 1)[0]
+        self.assertIn("buddy: 'WorkBuddy 国内版'", labels)
+        self.assertIn("workbuddy: 'WorkBuddy 国际版'", labels)
+        # 反向写法必须彻底消失，否则又是对调。
+        self.assertNotIn("workbuddy: 'WorkBuddy 国内版'", labels)
+        self.assertNotIn("buddy: 'CodeBuddy 国际版'", labels)
+        # 标签只差一个字，域名提示是唯一能一眼分清的依据。
+        self.assertIn("copilot.tencent.com", page)
+        self.assertIn("workbuddy.ai", page)
+
+
 class LauncherPortTests(unittest.TestCase):
     """本机监听地址不能落在 8000。
 

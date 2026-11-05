@@ -423,6 +423,78 @@ body[data-ds-dark-theme] .acct-chip.shield-private {
   user-select: none;
 }
 
+/* Collapse Arrow Controls for External Quota Packages (e.g. CodeBuddy) */
+.pkg-arrow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+
+.pkg-arrow-btn:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.pkg-chevron {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform .2s ease;
+}
+
+.pkg-arrow-btn[aria-expanded="true"] .pkg-chevron,
+.pkg-details[open] .pkg-summary .pkg-chevron {
+  transform: rotate(180deg);
+}
+
+.pkg-details > summary.pkg-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  padding: 2px 4px;
+  border-radius: 6px;
+  transition: background .15s ease, color .15s ease;
+}
+
+.pkg-details > summary.pkg-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pkg-details > summary.pkg-summary:hover {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-bg-hover) 70%, transparent);
+  color: var(--dsw-alias-label-primary);
+}
+
+.pkg-summary-label {
+  font-weight: 500;
+}
+
+.pkg-summary-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pkg-list-body {
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .quota-models {
   display: flex;
   flex-direction: column;

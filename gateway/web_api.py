@@ -5,6 +5,7 @@ import hmac
 import json
 import math
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -87,6 +88,141 @@ def unsupported(provider: str | None, feature: str, hint: str = "") -> str:
     scope = f"{provider} 渠道" if provider else "本机网关"
     text = f"{scope}的{feature}尚未接入本机网关"
     return f"{text}：{hint}" if hint else text
+
+
+# ── 插件探活结果的翻译 ──
+#
+# 上游把两种完全不同的拒绝写成同一个 `msg: "request illegal"`：
+#   11140 → 账号存在异常行为，已被限制使用（HTTP 403，retry_policy.retry=false）
+#   11128 → 这次调用没通过渠道校验，请重新发送（HTTP 400，可重发）
+# 只看 `msg` 分不出来，必须认 `displayMsg.zh`（pack.js 的 `errorDetail2` 把
+# 本地化文案排在最前，所以中文那句会出现在 message 里）。
+#
+# 而 pack.js 在 401/403 的收尾分支里把 `rotated` **写死成 true**
+# （`contentRejectionError(productId, status, body, true)`，见 pack.js 36816-36823），
+# 于是「本渠道只有 1 个账号、一次换号都没发生」也会报成
+# 「全部账号均被服务端安全策略拦截（已逐个换号重试）」。用户没法从这句话里知道
+# 真实情况，只能猜自己是不是又配错了。网关按事实重写：说清是哪个账号、
+# 是账号级还是渠道级、能不能重试、这个渠道到底有没有可换的号。
+_PROBE_RESTRICTED = "account-restricted"
+_PROBE_GATE = "channel-verification"
+_PROBE_EXPIRED = "credential-expired"
+
+
+def probe_failure_kind(message: str) -> str | None:
+    """从插件返回的失败文案里认出上游的裁定类别。认不出返回 None。"""
+    text = message or ""
+    lowered = text.lower()
+    if "账号存在异常行为" in text or "帳號存在異常行為" in text \
+            or "restricted due to unusual activity" in lowered:
+        return _PROBE_RESTRICTED
+    if "code 11128" in text or "渠道校验" in text or "请求被拦截" in text \
+            or "request blocked" in lowered:
+        return _PROBE_GATE
+    if "所有账号均被拒绝" in text or "credential expired and refresh failed" in lowered:
+        return _PROBE_EXPIRED
+    return None
+
+
+def _probe_detail(message: str) -> str:
+    """取上游自己那句话：`…更换被拦账号：账号存在异常行为，已被限制使用 request illegal`。"""
+    detail = (message or "").rsplit("：", 1)[-1].strip()
+    detail = re.sub(r"\s*request\s*illegal\s*$", "", detail, flags=re.IGNORECASE)
+    return detail or (message or "").strip()
+
+
+def _probe_status(message: str) -> str:
+    found = re.search(r"HTTP\s*(\d{3})", message or "")
+    return found.group(1) if found else ""
+
+
+def probe_failure_scope(total: int | None, usable: int | None) -> str:
+    """这个渠道到底有没有可换的号——决定「换号」这句建议说不说得出口。"""
+    if isinstance(total, int) and total <= 1:
+        return ("本渠道只有这 1 个账号，没有可换的号：重试、续期、换模型都不会放行，"
+                "要么等上游解封，要么再登录一个同渠道账号，要么用这个号到客户端提交反馈申诉。")
+    if isinstance(total, int) and total > 1:
+        free = usable if isinstance(usable, int) else total
+        return (f"本渠道共 {total} 个账号（{free} 个还在调度里）：这次探活测的就是这个号，"
+                "换号只影响真实对话，不会让本次测试变绿。")
+    return "这是账号级限制，不是本机网关的故障：重试、续期、换模型都不会放行。"
+
+
+def explain_plugin_probe_failure(value: dict, account_id: str = "", provider: str = "",
+                                 nickname: str = "", total: int | None = None,
+                                 usable: int | None = None) -> dict:
+    """把插件 `account.test` 的失败结果改写成可读、可执行的说明。
+
+    `ok` 为真、或认不出上游裁定的结果**原样返回**——网关不替插件编故事，
+    只纠正它那句已被证伪的「已逐个换号重试」。
+    """
+    if not isinstance(value, dict) or value.get("ok") is not False:
+        return value
+    message = str(value.get("message") or value.get("error") or "")
+    kind = probe_failure_kind(message)
+    name = nickname or value.get("nickname") or account_id or "该账号"
+    label = f"{name}（{account_id}）" if account_id and account_id != name else str(name)
+    status = _probe_status(message)
+    detail = _probe_detail(message)
+    out = {**value, "raw": message}
+
+    if kind == _PROBE_RESTRICTED:
+        evidence = " · ".join(part for part in (f"HTTP {status}" if status else "",
+                                                "11140", "上游 retry_policy.retry=false") if part)
+        out.update({
+            "code": _PROBE_RESTRICTED, "retryable": False, "restricted": True,
+            "upstreamCode": 11140, "accountId": account_id, "provider": provider,
+            "message": (f"账号 {label}被服务端限制使用：{detail}。（{evidence}）"
+                        + probe_failure_scope(total, usable)),
+        })
+        return out
+    if kind == _PROBE_GATE:
+        status_text = f"HTTP {status} · " if status else ""
+        # 「已升档」= pack.js 已经把内容防护逐级拉到最高档重发过，再说「重发一次」
+        # 就是让用户白点。
+        retry_hint = ("插件已把内容防护升到最高档仍被拒，稍后原样重试或换个模型即可"
+                      if "已升档" in message else "原样重发一次即可")
+        out.update({
+            "code": _PROBE_GATE, "retryable": True, "restricted": False,
+            "upstreamCode": 11128, "accountId": account_id, "provider": provider,
+            "message": (f"渠道校验未通过（{status_text}code 11128）：这次调用被上游判为"
+                        f"「不是官方客户端发出」，{retry_hint}；与账号额度和余额无关。"),
+        })
+        return out
+    if kind == _PROBE_EXPIRED:
+        status_text = f"HTTP {status}" if status else "HTTP 401"
+        out.update({
+            "code": _PROBE_EXPIRED, "retryable": False, "restricted": False,
+            "upstreamCode": 401, "accountId": account_id, "provider": provider,
+            "message": f"凭据已失效（{status_text}）：这个账号的令牌续期失败，请在插件里重新登录。",
+        })
+        return out
+    # 认不出类别时只做一件最小的事：撤掉那条已被证伪的换号声明。
+    if "已逐个换号重试" in message and isinstance(total, int) and total <= 1:
+        out["message"] = (message.replace("，已逐个换号重试", "")
+                          .replace("已逐个换号重试", ""))
+    return out
+
+
+def live_rate_limits(entry: dict, now_ms: int) -> dict[str, float]:
+    """该账号身上**还没过期**的模型限流/封禁标记（`{模型: 解禁时刻ms}`）。
+
+    pack.js 的 `modelRateLimits` 会把过期的标记留在表里（只有
+    `getAvailableAccount` 顺手剔除），所以这里按时刻过滤：过期的标记不能让
+    配额看板把账号显示成「冷却」。
+    """
+    raw = entry.get("modelRateLimits") if isinstance(entry, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for model, reset_at in raw.items():
+        if not isinstance(model, str):
+            continue
+        if isinstance(reset_at, bool) or not isinstance(reset_at, (int, float)):
+            continue
+        if reset_at > now_ms:
+            out[model] = float(reset_at)
+    return out
 
 
 def same_origin(request: Request) -> bool:
@@ -310,6 +446,15 @@ class WebManager:
             return True
         return False
 
+    async def _plugin_channel_accounts(self, provider: str) -> list[dict]:
+        """该渠道在插件里的账号原始行（含 `modelRateLimits`）。查不到返回空表。"""
+        try:
+            value = await self.bridge.call("account.list", {"provider": provider})
+        except BridgeError:
+            return []
+        return [row for row in (value or {}).get("accounts") or []
+                if isinstance(row, dict) and row.get("id")]
+
     async def _plugin_owner(self, account_id: str) -> str | None:
         """这个 id 属于插件里的哪个渠道；不在插件里返回 None。
 
@@ -323,11 +468,7 @@ class WebManager:
         for provider in CHANNELS:
             if provider == "antigravity":
                 continue
-            try:
-                value = await self.bridge.call("account.list", {"provider": provider})
-            except BridgeError:
-                continue
-            for row in (value or {}).get("accounts") or []:
+            for row in await self._plugin_channel_accounts(provider):
                 if row.get("id") == account_id:
                     return provider
         return None
@@ -371,6 +512,12 @@ class WebManager:
           - 没凭据且没人等 → 遗留空壳，不显示并顺手删掉。
         最后一种以前靠「`account_id not in self.bridged`」判断，进程一重启就失效
         （新的 bridged 是空的，旧占位被当成新登录）。
+
+        **还有限流/封禁标记。** 上游回 403 + `11140`（账号存在异常行为）时，
+        pack.js 会给这个账号写一条 30 分钟的 `modelRateLimits` 冷却，期间它不参与
+        选号。配额看板原先完全不看这张表，于是「测试失败、对话也不通」的账号在
+        看板上照样显示「正常」。这里把未过期的标记翻成 `cooldown` 状态与剩余秒数，
+        看板就能显示「冷却 N 分钟」。
         """
         try:
             value = await self.bridge.call("account.list", {"provider": provider})
@@ -392,6 +539,7 @@ class WebManager:
                            if isinstance(v, bool)}
             except Exception:  # noqa: BLE001 - 可选增强，任何失败都退回旧判据
                 present = {}
+        now_ms = int(time.time() * 1000)
         out, stale = [], []
         for entry in entries:
             account_id = entry["id"]
@@ -405,12 +553,25 @@ class WebManager:
                 stale.append(account_id)
                 continue
             enabled = entry.get("enabled") is not False
+            # 上游 403 + 11140 时 pack.js 会给账号写一条 30 分钟冷却，期间不参与
+            # 选号。看板原先不看这张表，被限制的账号照样显示「正常」。
+            limits = {} if pending else live_rate_limits(entry, now_ms)
+            cooling = bool(limits) and enabled
+            if pending or not enabled:
+                status = "disabled"
+            elif cooling:
+                status = "cooldown"
+            else:
+                status = "active"
             out.append({
                 "id": account_id, "provider": provider,
                 "driver": "channel-pack",
                 "nickname": f"{nickname} · 等待授权" if pending else nickname,
                 "enabled": enabled and not pending,
-                "status": "disabled" if pending else ("active" if enabled else "disabled"),
+                "status": status,
+                "cooldown_remaining_seconds":
+                    max(0, round((min(limits.values()) - now_ms) / 1000)) if cooling else 0,
+                "rate_limited_models": sorted(limits),
                 "expiresAt": int(entry.get("expiresAt") or 0),
                 "models": {}, "disabled_models": [],
                 "in_flight": 0, "fail_count": 0, "max_concurrency": 1,
@@ -739,14 +900,31 @@ class WebManager:
             if target is None:
                 # 插件账号的探活是插件自己的 `account.test`（它知道选哪个模型、
                 # 走哪条出站链路）。这里转发而不是假装本机测过了。
-                if await self._plugin_owner(account_id):
-                    try:
-                        value = await self.bridge.call(
-                            "account.test", {"accountId": account_id}, attempts=1)
-                    except BridgeError as exc:
-                        return {"ok": False, "error": str(exc)}
-                    return value if isinstance(value, dict) else {"ok": False, "error": "插件未返回测试结果"}
-                raise ValueError("账号不存在")
+                provider_of_account = await self._plugin_owner(account_id)
+                if provider_of_account is None:
+                    raise ValueError("账号不存在")
+                try:
+                    value = await self.bridge.call(
+                        "account.test", {"accountId": account_id}, attempts=1)
+                except BridgeError as exc:
+                    return {"ok": False, "error": str(exc)}
+                if not isinstance(value, dict):
+                    return {"ok": False, "error": "插件未返回测试结果"}
+                if value.get("ok") is False:
+                    # 插件把「账号被服务端限制」和「渠道校验没过」糊成同一句，
+                    # 还会在只有 1 个账号时谎称「已逐个换号重试」。转发前翻译。
+                    siblings = [row for row in
+                                await self._plugin_channel_accounts(provider_of_account)
+                                if row.get("id") != account_id]
+                    now_ms = int(time.time() * 1000)
+                    usable = sum(1 for row in siblings
+                                 if row.get("enabled") is not False
+                                 and not live_rate_limits(row, now_ms))
+                    return explain_plugin_probe_failure(
+                        value, account_id=account_id, provider=provider_of_account,
+                        nickname=str(value.get("nickname") or ""),
+                        total=len(siblings) + 1, usable=usable + 1)
+                return value
             aliases = [m for m in target["models"] if m not in target["disabled_models"]]
             if not aliases:
                 return {"ok": False, "error": "该账号的模型已全部关闭"}
