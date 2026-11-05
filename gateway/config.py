@@ -145,6 +145,8 @@ class Settings(BaseModel):
 
     accounts: list[Account] = Field(default_factory=list)
     cooldown_seconds: float = Field(default=600, gt=0, le=86400)
+    network_cooldown_seconds: float = Field(default=20, gt=0, le=300)
+    network_cooldown_max_seconds: float = Field(default=120, gt=0, le=3600)
     max_retries: int = Field(default=3, ge=0, le=3)
     pool_wait_seconds: float = Field(default=1, ge=0, le=30)
     first_output_timeout_seconds: float = Field(default=30, gt=0, le=300)
@@ -152,6 +154,8 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def check_pool(self):
+        if self.network_cooldown_max_seconds < self.network_cooldown_seconds:
+            raise ValueError('network cooldown maximum must be at least its initial duration')
         if len({a.id for a in self.accounts}) != len(self.accounts):
             raise ValueError("account ids must be unique")
         drivers = {a.driver for a in self.accounts}
@@ -173,6 +177,7 @@ def load_settings() -> Settings:
                 "max_concurrency", "tencent_prompt_level", "cooldown_seconds", "max_retries",
                 "proxy", "jitter_ms",
                 "pool_wait_seconds", "first_output_timeout_seconds", "stream_timeout_seconds",
+                "network_cooldown_seconds", "network_cooldown_max_seconds",
             } else "<field>" for part in err["loc"]) or "<root>"
             for err in exc.errors(include_input=False, include_context=False, include_url=False)
         )

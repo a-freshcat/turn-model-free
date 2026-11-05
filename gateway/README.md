@@ -1,6 +1,6 @@
 # 本机 OpenAI Chat 网关
 
-当前使用入口见[仓库首页](../README.md)。v1.2.8 新增的暂停、限流和 AI 排查提醒见[调用保护说明](docs/protection.md)。
+当前使用入口见[仓库首页](../README.md)。v1.2.9 新增的暂停、限流和 AI 排查提醒见[调用保护说明](docs/protection.md)。
 
 Python 3.10+、FastAPI、Uvicorn、httpx 异步实现。支持离线模拟号池、OpenAI 兼容上游，以及 Antigravity Google OAuth 和原生请求驱动。保留 free-m-clone 原界面风格。
 
@@ -250,7 +250,7 @@ $env:GATEWAY_ACCOUNTS = (Join-Path (Get-Location) "accounts.json")
 1. 锁内轮询并原子占用账号槽位；网络 I/O 不持锁。租约覆盖整个响应，完成、失败或客户端断开后关闭连接并释放。
 2. 非 2xx、网络错误、首个有效输出超时、协议错误和结构化 11128 都进入冷却。
    普通 4xx 也按本任务要求重试，因此错误参数可能冷却多个账号；后续可按上游契约细分参数错误。
-3. 默认冷却 600 秒；有效 Retry-After 可延长冷却，最长按 86400 秒处理。
+3. 普通网络、超时、临时服务故障默认按 20/40/80/120 秒退避，完整成功后重置；其他失败仍用默认 600 秒。有效 Retry-After 可延长等待，最长按 86400 秒解析。
    到期后在下次调度/状态查询时恢复 active，disabled 不自动恢复。
 4. `max_retries=3` 表示初次 + 最多 3 次重试，共最多 4 次；需要总共 3 次时设置为 2。
    同一请求不会重复使用已经尝试过的账号。

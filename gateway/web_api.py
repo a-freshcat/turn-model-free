@@ -952,6 +952,7 @@ class WebManager:
                     issue = exc if isinstance(exc, UpstreamFailure) else UpstreamFailure("test_timeout")
                     await lease.fail(issue)
                     return {"ok": False, "error": issue.reason}
+                await lease.succeed()
                 return {"ok": True, "ms": round((time.monotonic() - start) * 1000)}
             except PoolUnavailable:
                 return {"ok": False, "error": "账号已停用、冷却中或并发已满"}

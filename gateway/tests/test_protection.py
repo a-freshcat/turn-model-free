@@ -56,9 +56,9 @@ class ProtectionTests(unittest.IsolatedAsyncioTestCase):
         await self.guard.release(token)
         self.assertFalse(self.guard.paused)
 
-    async def test_repeated_transient_errors_trip_without_recording_body(self):
+    async def test_repeated_protocol_errors_trip_without_recording_body(self):
         for _ in range(3):
-            await self.guard.observe_failure('http_500')
+            await self.guard.observe_failure('invalid_completion_shape')
         state=await self.guard.snapshot()
         self.assertTrue(state['paused'])
         self.assertEqual(state['reason'],'repeated_failures')

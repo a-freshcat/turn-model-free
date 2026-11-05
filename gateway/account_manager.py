@@ -11,6 +11,7 @@ from typing import Awaitable, Callable, TypeVar
 import anyio
 
 from config import Account, Settings, Status
+from failure_policy import is_transient_failure
 
 LOG = logging.getLogger("gateway.pool")
 T = TypeVar("T")
@@ -45,6 +46,8 @@ class _State:
     in_flight: int = 0
     last_failure_reason: str | None = None
     last_failure_at: float = 0
+    transient_streak: int = 0
+    last_transient_at: float = 0
 
 
 class Lease:
@@ -69,13 +72,29 @@ class Lease:
                                          else 'upstream_failure')
             state.last_failure_at = time.time()
             state.status = "disabled" if failure.reauth else "cooldown"
+            delay = self.pool.settings.cooldown_seconds
+            if is_transient_failure(failure.reason) and not failure.reauth:
+                now = time.monotonic()
+                state.transient_streak = min(8, state.transient_streak + 1) if now - state.last_transient_at < 300 else 1
+                state.last_transient_at = now
+                # A deliberately smaller legacy cooldown remains respected.
+                delay = min(delay, self.pool.settings.network_cooldown_max_seconds,
+                            self.pool.settings.network_cooldown_seconds * 2 ** (state.transient_streak - 1))
+            else:
+                state.transient_streak = 0
             state.cooldown_until = max(
                 state.cooldown_until,
-                time.monotonic() + max(self.pool.settings.cooldown_seconds, failure.retry_after),
+                time.monotonic() + max(delay, failure.retry_after),
             )
             LOG.warning("account=%s outcome=%s fail_count=%d",
                         state.account.id, failure.reason, state.fail_count)
             self.pool.condition.notify_all()
+
+    async def succeed(self) -> None:
+        """Reset adaptive backoff only after a complete response, never on SSE preflight."""
+        async with self.pool.condition:
+            self.state.transient_streak = 0
+            self.state.last_transient_at = 0
 
     async def release(self) -> None:
         async with self.pool.condition:
@@ -109,6 +128,7 @@ class AccountManager:
             return [
                 {"id": s.account.id, "status": s.status, "fail_count": s.fail_count,
                  "last_failure_reason": s.last_failure_reason, "last_failure_at": s.last_failure_at,
+                 "transient_failure_streak": s.transient_streak,
                  "in_flight": s.in_flight, "max_concurrency": s.account.max_concurrency,
                  "cooldown_remaining_seconds": max(0, math.ceil(s.cooldown_until - now))
                  if s.status == "cooldown" else 0}

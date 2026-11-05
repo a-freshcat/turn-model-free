@@ -126,6 +126,7 @@ class ChatResponse(Response):
                 await self._stream(send, lease, result, headers)
             else:
                 # ensure_ascii 也能安全转发来自兼容上游的转义 Unicode。
+                await lease.succeed()
                 response = Response(json.dumps(result, separators=(",", ":"), allow_nan=False),
                                     media_type="application/json", headers=headers)
                 await response(scope, receive, send)
@@ -152,6 +153,8 @@ class ChatResponse(Response):
             await send({"type": "http.response.body", "body": encode_event(error_body(
                 "The upstream stream ended before completion.", "upstream_stream_interrupted",
             )), "more_body": True})
+        else:
+            await lease.succeed()
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 

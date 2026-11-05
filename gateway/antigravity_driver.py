@@ -189,7 +189,7 @@ async def send_native(auth, client, account, messages, stream, *, model, options
         if not credential.get("project_id"):
             credential = await auth.refresh_catalog(account.credential_id, proxy=proxy)
     except OAuthFailure as exc:
-        raise UpstreamFailure("antigravity_authorization", reauth=exc.reauth) from None
+        raise UpstreamFailure(exc.reason, reauth=exc.reauth, retry_after=exc.retry_after) from None
     session_seed = next((m.get("content") for m in messages
                          if m["role"] == "user" and isinstance(m.get("content"), str)), "")
     wire["sessionId"] = "-" + str(int.from_bytes(hashlib.sha256(session_seed.encode()).digest()[:8], "big") & ((1 << 63) - 1))
@@ -212,7 +212,7 @@ async def send_native(auth, client, account, messages, stream, *, model, options
             try:
                 credential = await auth.credential(account.credential_id, force=True, proxy=proxy)
             except OAuthFailure as exc:
-                raise UpstreamFailure("antigravity_authorization", reauth=exc.reauth) from None
+                raise UpstreamFailure(exc.reason, reauth=exc.reauth, retry_after=exc.retry_after) from None
         if not response.is_success:
             retry = _retry_after(response.headers.get("retry-after"))
             raise UpstreamFailure("antigravity_http_" + str(response.status_code),

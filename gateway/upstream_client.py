@@ -351,5 +351,5 @@ class UpstreamClient:
             raise UpstreamFailure("upstream_transport", retry_after=retry) from None
         except UpstreamFailure as exc:
             if retry > exc.retry_after:
-                raise UpstreamFailure(exc.reason, retry_after=retry) from None
+                raise UpstreamFailure(exc.reason, retry_after=retry, reauth=exc.reauth) from None
             raise

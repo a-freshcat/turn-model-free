@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 import anyio
+from failure_policy import is_transient_failure
 from starlette.responses import JSONResponse
 
 CURRENT_REQUEST = ContextVar('gateway_protection_request', default=None)
@@ -56,6 +57,7 @@ class DispatchProtection:
         self.lock = anyio.Lock()
         self.active = {}
         self.starts, self.failures = deque(), deque()
+        self.network_failures = deque()
         self.last_issue_at = 0
         self.paused, self.reason, self.occurred_at, self.http_status = False, '', 0, None
         self.persisted = True
@@ -143,6 +145,7 @@ class DispatchProtection:
             self.paused, self.reason, self.http_status = False, '', None
             self.occurred_at = time.time()
             self.failures.clear()
+            self.network_failures.clear()
             self.last_issue_at = 0
             self._save()
             if not self.persisted:
@@ -150,6 +153,11 @@ class DispatchProtection:
                 raise ProtectionBlocked()
 
     async def observe_failure(self, reason):
+        if is_transient_failure(reason):
+            async with self.lock:
+                self.network_failures.append(time.monotonic())
+                self.last_issue_at = time.time()
+            return  # Ordinary network faults never latch an account-security pause.
         # Native drivers namespace HTTP failures; keep the same stop policy.
         if reason.startswith('antigravity_http_'):
             reason = reason.removeprefix('antigravity_')
@@ -174,13 +182,16 @@ class DispatchProtection:
         async with self.lock:
             while self.failures and self.failures[0] <= time.monotonic() - 60:
                 self.failures.popleft()
+            while self.network_failures and self.network_failures[0] <= time.monotonic() - 60:
+                self.network_failures.popleft()
             return {'paused': self.paused, 'reason': self.reason,
                 'message': MESSAGES.get(self.reason, '模型调用保护已启用。'),
                 'occurred_at': self.occurred_at, 'http_status': self.http_status,
                 'active_requests': len(self.active), 'max_active_requests': self.concurrency,
                 'max_dispatch_per_minute': self.per_minute, 'persisted': self.persisted,
                 'recent_failure_count': len(self.failures),
-                'last_issue_at': self.last_issue_at if self.failures else 0,
+                'recent_network_failure_count': len(self.network_failures),
+                'last_issue_at': self.last_issue_at if self.failures or self.network_failures else 0,
                 'help': '暂停后请复制诊断信息，发给 AI 或维护者排查。请勿粘贴账号配置、Cookie 或令牌。'}
 
 

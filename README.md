@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。通过网页统一管理账号、查看额度、选择模型和测试流式对话。
 
-**当前版本：v1.2.8** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.2.9** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
 
 ## 功能
 
@@ -92,12 +92,15 @@ curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8199/v
 ### 异常保护与 AI 排查提醒
 
 默认最多 **2 个对话并发、每分钟 20 次本服务的模型调度**，每次本机换号尝试也计数。
-上游返回 401/403/429、11128 或明确账号限制时暂停后续调用；一分钟内累计 3 次其他上游故障也会暂停。
+上游返回 401/403/429、11128 或明确账号限制时暂停后续调用；一分钟内累计 3 次协议解析等非网络故障也会暂停。
 该暂停会阻止继续换号重试，并尽可能取消本服务正在转发的其他请求。
 
 页面会显示异常原因、发生时间及「复制诊断给 AI」。诊断仅含固定错误分类、HTTP 状态、时间和调用上限，
 不会自动发给 AI，也不会复制账号、对话、Cookie 或令牌。暂停状态跨重启保留，检查原因后点「检查后恢复」。
 恢复不会解除上游限制，也不会自动启用已停用账号。
+
+普通网络抖动、超时和临时 500/502/503/504 不作为账号风险信号：默认退避 20 秒，连续失败按 40、80、最多 120 秒递增，完整成功后重置。
+更长的上游 `Retry-After` 仍会遵守。可在 accounts.json 设置 `network_cooldown_seconds` 和 `network_cooldown_max_seconds`。
 
 可通过 `GATEWAY_MAX_ACTIVE_CHATS` 和 `GATEWAY_MAX_DISPATCH_PER_MINUTE` 调低上限。
 保护仅覆盖经过本服务的模型调用；插件内部的重试和绕过本服务的直接请求无法由这里中断。

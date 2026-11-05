@@ -48,9 +48,11 @@ def model_pool(name: str, id_: str = "") -> str:
 class OAuthFailure(Exception):
     """Only fixed, sanitized messages may cross this boundary."""
 
-    def __init__(self, message: str, *, reauth: bool = False):
+    def __init__(self, message: str, *, reauth: bool = False, reason='antigravity_authorization', retry_after=0):
         super().__init__(message)
         self.reauth = reauth
+        self.reason = reason
+        self.retry_after = retry_after
 
 
 class OAuthCallbackRedaction:
@@ -123,6 +125,7 @@ class AntigravityAuth:
             self.client = None
 
     async def json_request(self, method, url, *, token=None, proxy=None, **kwargs):
+        from upstream_client import _retry_after
         headers = {"User-Agent": self.user_agent}
         if token:
             headers["Authorization"] = "Bearer " + token
@@ -134,6 +137,10 @@ class AntigravityAuth:
                         raise OAuthFailure("Google 响应过大")
                     body.extend(chunk)
                 try:
+                    if response.status_code in (408,429,500,502,503,504):
+                        raise OAuthFailure('Google 暂时无法处理请求（HTTP '+str(response.status_code)+'）',
+                                           reason='antigravity_http_'+str(response.status_code),
+                                           retry_after=_retry_after(response.headers.get('retry-after')))
                     value = json.loads(body)
                 except (ValueError, RecursionError):
                     raise OAuthFailure("Google 返回了无效响应") from None
@@ -145,11 +152,13 @@ class AntigravityAuth:
                     if response.status_code == 401:
                         raise OAuthFailure("Google 凭据已失效，请重新登录", reauth=True)
                     if response.status_code == 403:
-                        raise OAuthFailure("Google 拒绝了该账号的访问，请在官方客户端检查账号权限或验证要求")
+                        raise OAuthFailure("Google 拒绝了该账号的访问，请在官方客户端检查账号权限或验证要求",
+                                           reason='antigravity_http_403')
                     raise OAuthFailure("Google 请求失败（HTTP " + str(response.status_code) + "）")
                 return value
         except httpx.HTTPError:
-            raise OAuthFailure("无法连接 Google，请检查网络或 GATEWAY_UPSTREAM_PROXY") from None
+            raise OAuthFailure("无法连接 Google，请检查网络或 GATEWAY_UPSTREAM_PROXY",
+                               reason='antigravity_auth_transport') from None
 
     async def begin(self, base: str):
         url = urlsplit(base)

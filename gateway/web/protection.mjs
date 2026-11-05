@@ -33,12 +33,14 @@ function render(data) {
     ? data.message+' 请复制诊断信息，发给 AI 排查后手动恢复。'+(data.persisted?'':' 暂停状态保存失败，请检查磁盘权限。')
     : data.recent_failure_count
       ? `最近一分钟有 ${data.recent_failure_count} 次上游故障；请复制诊断信息发给 AI 检查，连续故障会暂停调用。`
+      : data.recent_network_failure_count
+        ? `最近一分钟有 ${data.recent_network_failure_count} 次网络或临时服务故障，按短退避处理，不代表账号被限制。持续失败时可复制诊断给 AI。`
       : `调用保护已启用 · 最多 ${data.max_active_requests} 个对话并发 / ${data.max_dispatch_per_minute} 次模型调度每分钟`
   const occurred=data.paused?data.occurred_at:data.last_issue_at
   if(occurred)message.textContent+='（'+new Date(occurred*1000).toLocaleString()+'）'
   pause.hidden=data.paused
   resume.hidden=!data.paused
-  copy.hidden=!data.paused&&!data.recent_failure_count
+  copy.hidden=!data.paused&&!data.recent_failure_count&&!data.recent_network_failure_count
   document.title=data.paused?'[调用已暂停] '+originalTitle:originalTitle
 }
 async function update(){ try{render(await request())}catch{if(latest?.paused)result.textContent='状态刷新失败，暂停提醒保留。'} }
@@ -55,6 +57,7 @@ copy.addEventListener('click',async()=>{
     reason:latest.reason,http_status:latest.http_status,
     occurred_at:latest.occurred_at?new Date(latest.occurred_at*1000).toISOString():null,
     recent_failure_count:latest.recent_failure_count,last_issue_at:latest.last_issue_at,
+    recent_network_failure_count:latest.recent_network_failure_count,
     paused:latest.paused,state_saved:latest.persisted,
     max_active_requests:latest.max_active_requests,max_dispatch_per_minute:latest.max_dispatch_per_minute}
   const text='请协助排查网关暂停原因；请勿要求上传账号配置、Cookie、访问令牌或刷新令牌。\n'+JSON.stringify(diagnostic,null,2)
