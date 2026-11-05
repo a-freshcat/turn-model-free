@@ -150,6 +150,9 @@ class DispatchProtection:
                 raise ProtectionBlocked()
 
     async def observe_failure(self, reason):
+        # Native drivers namespace HTTP failures; keep the same stop policy.
+        if reason.startswith('antigravity_http_'):
+            reason = reason.removeprefix('antigravity_')
         if reason in ('http_401', 'http_403', 'account_restricted', 'antigravity_authorization'):
             await self.pause('upstream_rejected', int(reason[5:]) if reason.startswith('http_') else None)
         elif reason in ('http_429',):

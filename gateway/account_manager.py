@@ -2,6 +2,7 @@
 
 import logging
 import math
+import re
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ class _State:
     fail_count: int
     cooldown_until: float = 0
     in_flight: int = 0
+    last_failure_reason: str | None = None
+    last_failure_at: float = 0
 
 
 class Lease:
@@ -62,6 +65,9 @@ class Lease:
         async with self.pool.condition:
             state = self.state
             state.fail_count += 1
+            state.last_failure_reason = (failure.reason if re.fullmatch(r'[a-z0-9_]{1,64}', failure.reason)
+                                         else 'upstream_failure')
+            state.last_failure_at = time.time()
             state.status = "disabled" if failure.reauth else "cooldown"
             state.cooldown_until = max(
                 state.cooldown_until,
@@ -102,6 +108,7 @@ class AccountManager:
             now = time.monotonic()
             return [
                 {"id": s.account.id, "status": s.status, "fail_count": s.fail_count,
+                 "last_failure_reason": s.last_failure_reason, "last_failure_at": s.last_failure_at,
                  "in_flight": s.in_flight, "max_concurrency": s.account.max_concurrency,
                  "cooldown_remaining_seconds": max(0, math.ceil(s.cooldown_until - now))
                  if s.status == "cooldown" else 0}

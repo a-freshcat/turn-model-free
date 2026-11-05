@@ -36,6 +36,14 @@ class ProtectionTests(unittest.IsolatedAsyncioTestCase):
         self.path.write_text('bad state',encoding='utf-8')
         self.assertTrue(DispatchProtection(self.path).paused)
 
+    async def test_native_http_status_prefix_uses_the_same_immediate_stop_policy(self):
+        for status in (401,403,429):
+            await self.guard.resume()
+            await self.guard.observe_failure(f'antigravity_http_{status}')
+            state=await self.guard.snapshot()
+            self.assertTrue(state['paused'])
+            self.assertEqual(state['http_status'],status)
+
     async def test_local_rate_and_concurrency_limits_do_not_reach_upstream(self):
         await self.guard.before_send()
         await self.guard.before_send()
@@ -168,6 +176,9 @@ class ProtectionRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('secret-error-body',reply.text)
                 self.assertTrue(web.protection.paused)
                 self.assertTrue(all(s.in_flight==0 for s in pool.states))
+                state=(await pool.snapshot())[0]
+                self.assertEqual(state['last_failure_reason'],'http_403')
+                self.assertGreater(state['last_failure_at'],0)
                 self.assertEqual((await client.get('/ui/protection',headers={'Authorization':''})).status_code,401)
                 await client.post('/ui/session',json={'key':'test-protection-key'},headers={'Origin':'http://test'})
                 self.assertEqual((await client.post('/ui/protection',json={

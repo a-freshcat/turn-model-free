@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,7 +23,10 @@ from main import app
 
 async def main():
     key = secrets.token_urlsafe(24)
-    with patch.dict(os.environ, {"GATEWAY_API_KEY": key, "GATEWAY_ACCOUNTS": str(ROOT / "accounts.demo.json")}):
+    with tempfile.TemporaryDirectory() as isolated, patch.dict(os.environ, {
+        "GATEWAY_API_KEY": key, "GATEWAY_ACCOUNTS": str(Path(isolated) / "accounts.demo.json")
+    }):
+        Path(os.environ['GATEWAY_ACCOUNTS']).write_bytes((ROOT / 'accounts.demo.json').read_bytes())
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         sock.listen(128)

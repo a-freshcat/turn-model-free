@@ -1,6 +1,6 @@
 {
   "name": "free-m-clone",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "private": true,
   "type": "module",
   "description": "「白嫖模型接入」页面的独立抄写版（页面代码逐字节抄自 dsh-our-free-model 2.5.4 的 client.js），并把该插件的腾讯渠道 11128 防护层一并移植、接成可运行的请求管道；附带假渠道包、离线演示页，以及与已安装插件的渲染/行为对比测试。",
