@@ -205,6 +205,57 @@ function buildExternalUsageCard(account) {
   const card = el('section', 'usage-card external-usage-card')
   const maxC = Math.max(1, account.max_concurrency || 1)
   const inFlight = account.in_flight || 0
+  const balance = account.balance
+  const packages = Array.isArray(balance?.packages) ? balance.packages : []
+
+  // 有积分包读数就按积分展示：用户要的是「还剩多少额度」，并发负载只是调度
+  // 侧信息，不该占掉这一栏的主位。没有读数时才退回并发负载卡片，并把原因
+  // 写在脚注里——空卡片（不解释为什么空）和「额度已用光」看起来一样。
+  if (packages.length > 0) {
+    const head = el('div', 'usage-card-head')
+    const titleWrap = el('div', 'usage-card-title')
+    titleWrap.append(el('strong', 'usage-pool-name', '剩余积分'))
+    const infoBadge = el('span', 'usage-info-icon', 'i')
+    infoBadge.setAttribute('aria-hidden', 'true')
+    titleWrap.append(infoBadge)
+
+    const unit = packages.find(p => p.unit)?.unit || '积分'
+    const metricWrap = el('div', 'usage-card-metrics')
+    metricWrap.append(
+      el('span', 'usage-used-label', `共 ${fmtNumber(balance.total)} ${unit}`),
+      el('span', 'usage-remain-pill', `并发 ${inFlight}/${maxC}`)
+    )
+    head.append(titleWrap, metricWrap)
+    card.append(head)
+
+    for (const pack of packages) {
+      const pkgTotal = Number.isFinite(pack.total) ? pack.total : null
+      const pkgRemaining = Number.isFinite(pack.remaining) ? pack.remaining : null
+      const remainPct = pkgTotal && pkgRemaining !== null
+        ? Math.max(0, Math.min(100, (pkgRemaining / pkgTotal) * 100))
+        : null
+      const row = el('div', 'quota-model')
+      const rowHead = el('div', 'quota-model-head')
+      rowHead.append(
+        el('span', 'quota-model-name', pack.name || '积分包'),
+        el('strong', '', pkgRemaining === null
+          ? '未知'
+          : `${fmtNumber(pkgRemaining)}${pack.unit ? ' ' + pack.unit : ''}`)
+      )
+      row.append(rowHead)
+      if (remainPct !== null) row.append(createUsageBar(remainPct, `${pack.name} 剩余`))
+      // 到期时间只对会过期的包有意义（Bonus Pack 之类）。
+      const expiry = pack.expiredTime || pack.cycleEndTime || ''
+      if (expiry) row.append(el('div', 'quota-small', `有效期至 ${expiry}`))
+      card.append(row)
+    }
+
+    if (account.balanceError) {
+      card.append(el('p', 'ofm_balanceerror quota-account-error', account.balanceError))
+    }
+    return card
+  }
+
   const loadPct = Math.min(100, Math.round((inFlight / maxC) * 100))
   const remainingLoad = Math.max(0, 100 - loadPct)
 
@@ -223,6 +274,12 @@ function buildExternalUsageCard(account) {
   head.append(titleWrap, metricWrap)
   card.append(head)
   card.append(createUsageBar(remainingLoad, `${account.name} 并发负载`))
+
+  // 「查不到积分」和「没有积分」必须分开说。这里把上游给的原因照出来，
+  // 用户才知道是该重登、还是这个渠道本来就没有余额接口。
+  if (account.balanceError) {
+    card.append(el('p', 'ofm_balanceerror quota-account-error', `积分不可用：${account.balanceError}`))
+  }
 
   const foot = el('div', 'usage-card-foot')
   foot.append(
@@ -471,9 +528,13 @@ async function load() {
     }
   })
 
-  // Also fetch any non-Antigravity accounts so the pool table shows all grouped accounts like Image 2
+  // 插件渠道的账号不在 `/ui/state` 里（那只是本机 accounts.json 的快照），
+  // 所以**不能**用「state 里的账号比配额看板多」当作是否需要查询的条件——
+  // 只有 1 个 antigravity 账号时两边都是 1，那个条件恒为假，看板永远只剩
+  // 一个账号，插件积分一条都看不到。改为无条件问一次 `provider.status`，
+  // 它才是「这个渠道有没有账号」的真实来源。
   const seenIds = new Set(merged.map(a => a.id))
-  if (stateById.size > seenIds.size) {
+  {
     try {
       const statusRpc = await api('/ui/rpc', { method: 'provider.status', payload: {} })
       const statuses = statusRpc.value?.statuses || {}
@@ -485,11 +546,25 @@ async function load() {
           api('/ui/rpc', { method: 'account.list', payload: { provider } }).catch(() => null)
         )
       )
+      // 积分余额对每个账号是一次上游请求，所以和账号列表分开取。取失败只影响
+      // 那一行的读数，不该让整张表都空掉——这里逐渠道 catch 成 null。
+      const balanceLists = await Promise.all(
+        activeProviders.map(provider =>
+          api('/ui/rpc', { method: 'credits.balances', payload: { provider } }).catch(() => null)
+        )
+      )
+      const balancesById = new Map()
+      for (const reply of balanceLists) {
+        for (const row of reply?.value?.accounts || []) {
+          if (row?.accountId) balancesById.set(row.accountId, row)
+        }
+      }
       for (const item of lists) {
         for (const row of item?.value?.accounts || []) {
           if (seenIds.has(row.id)) continue
           seenIds.add(row.id)
           const rt = stateById.get(row.id) || {}
+          const credit = balancesById.get(row.id)
           merged.push({
             id: row.id,
             name: (row.nickname || '未命名账号').replace(/\s*·\s*冷却.*$/, ''),
@@ -501,11 +576,15 @@ async function load() {
             fail_count: rt.fail_count ?? row.fail_count ?? 0,
             cooldown_remaining_seconds: rt.cooldown_remaining_seconds ?? 0,
             models: [],
+            // 插件的积分包读数。`null` 表示查不到，`balanceError` 说明原因。
+            balance: credit?.balance ?? null,
+            balanceError: credit?.error || '',
           })
         }
       }
     } catch {
-      // Fallback gracefully if RPC is not mocked in unit tests
+      // 看板不该因为一次 RPC 失败就只剩 antigravity：外侧已经渲染了账号表，
+      // 这里静默跳过插件账号即可，错误由 `quota-error` 之外的正常路径表达。
     }
   }
 

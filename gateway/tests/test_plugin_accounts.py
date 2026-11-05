@@ -274,6 +274,71 @@ class MergedViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rows[0]["pending"])
         self.assertEqual(deleted, [], "正在登录的占位不能删")
 
+    async def test_placeholder_with_a_credential_is_not_deleted(self):
+        """昵称等于 id 但**有凭据**的是真账号，不能当空壳删掉。
+
+        登录成功但上游没给昵称时，记录长这样。旧判据只看「昵称等于 id」，
+        于是这种账号每刷一次页面就被删一次——用户看到的是账号自己消失。
+        """
+        listed = [
+            {"id": "buddy-named", "nickname": "buddy-named", "enabled": True,
+             "credentialRef": "BUDDY_ACCOUNT_OK"},
+            {"id": "buddy-shell", "nickname": "buddy-shell", "enabled": True,
+             "credentialRef": "BUDDY_ACCOUNT_GONE"},
+        ]
+        deleted = []
+
+        class _Bridge:
+            async def call(inner, method, payload, attempts=5):
+                if method == "account.list":
+                    return {"accounts": listed}
+                if method == "credential.presence":
+                    return {"present": {"buddy-named": True, "buddy-shell": False}}
+                if method == "account.delete":
+                    deleted.append(payload["accountId"])
+                    return {"ok": True}
+                raise AssertionError(method)
+
+            async def aclose(inner):
+                pass
+
+        self.web.bridge = _Bridge()
+        rows = await self.web.plugin_accounts("buddy")
+        self.assertEqual([r["id"] for r in rows], ["buddy-named"])
+        self.assertFalse(rows[0]["pending"])
+        self.assertEqual(deleted, ["buddy-shell"])
+
+    async def test_restarted_gateway_reaps_old_placeholders(self):
+        """进程重启后，`bridged` 是空的——旧占位必须靠凭据判定被清掉。
+
+        这正是用户报的那个现象：没点「添加账号」，页面上却有一个
+        「等待授权」的账号占着位置。它来自上一次会话中断的登录。
+        """
+        listed = [{"id": "buddy-stale", "nickname": "buddy-stale", "enabled": True,
+                   "credentialRef": "BUDDY_ACCOUNT_MISSING"}]
+        deleted = []
+
+        class _Bridge:
+            async def call(inner, method, payload, attempts=5):
+                if method == "account.list":
+                    return {"accounts": listed}
+                if method == "credential.presence":
+                    return {"present": {"buddy-stale": False}}
+                if method == "account.delete":
+                    deleted.append(payload["accountId"])
+                    return {"ok": True}
+                raise AssertionError(method)
+
+            async def aclose(inner):
+                pass
+
+        self.web.bridge = _Bridge()
+        # 模拟重启：没有任何在途登录窗口。
+        self.web.bridged = {}
+        rows = await self.web.plugin_accounts("buddy")
+        self.assertEqual(rows, [])
+        self.assertEqual(deleted, ["buddy-stale"])
+
     async def test_plugin_failure_degrades_to_local_accounts_only(self):
         async def broken(provider):
             return []
@@ -344,14 +409,11 @@ class ChatRoutingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RealPluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    """真机：插件在跑时，模型清单必须真的取到。
+    """真机：插件在跑时，模型清单与账号必须真的取到。
 
-    这是本组测试里唯一依赖外部状态的用例：它要求 DSH 正在运行且
-    「白嫖模型接入」的本机网关已启用。
-
-    ⚠️ 插件网关没在跑时必须**跳过**，不能失败。它停不停取决于 DSH 是否运行，
-    与本仓库代码无关；把外部状态算成回归会让每次 DSH 重启都变成一次假红灯。
-    反过来，跳过也不等于通过——它明确表示「这次没验证」。
+    这是本组测试里唯一依赖外部状态的用例：它要求 DSH 正在运行、且
+    「白嫖模型接入」的本机网关已启用并且真的在监听。不满足时跳过，
+    **不放宽断言**——跳过意味着「这次没验证」，不意味着「验证通过」。
     """
 
     async def asyncSetUp(self):
@@ -361,14 +423,53 @@ class RealPluginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         except PluginGatewayError as exc:
             self.skipTest(f"插件网关不可用：{exc}")
         if not self.models:
-            self.skipTest("插件网关返回空模型清单（插件可能未启用任何渠道）")
+            self.skipTest("插件网关在跑但没有可用模型（DSH 侧未启用任何渠道）")
 
     async def test_models_are_namespaced_by_provider(self):
         """插件返回的模型 id 必须带 provider 前缀，否则网关无法按渠道过滤。"""
+        self.assertTrue(self.models, "插件网关返回了空模型清单")
         prefixed = [m for m in self.models if self.gateway.provider_of(m) in CHANNELS]
         self.assertTrue(prefixed, f"没有属于已知渠道的模型：{self.models[:5]}")
         # 至少覆盖一个非 antigravity 渠道，证明 12 家的链路是通的。
         self.assertTrue(any(self.gateway.provider_of(m) != "antigravity" for m in prefixed))
+
+
+class BridgeDoesNotHijackGatewayPortTests(unittest.TestCase):
+    """桥接子进程绝不能占用 DSH 的 openai-gateway 端口。
+
+    这是一条**回归**用例，锁住一个已经发生过的真实缺陷：`pack.js` 的
+    `apply()` 会顺带启动它自带的 OpenAI 兼容网关（默认 127.0.0.1:8326），
+    而桥原本是无条件 `apply()`。于是桥一启动就占了 DSH 的端口，DSH 自己的
+    网关 bind 失败后**静默**降级——端口通着、密钥对得上，`/v1/models` 却回空、
+    对话回 502。用户看到的是「插件坏了」，实际是一个本该无足轻重的辅助进程
+    冒名顶替了服务端。
+
+    断言的是脚本里的那一行，而不是「现在有没有被占」——后者取决于时序，
+    跑测试时可能恰好没碰上也照样是缺陷。
+    """
+
+    def test_bridge_disables_its_own_gateway(self):
+        script = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "pack_bridge.mjs").read_text(encoding="utf-8")
+        self.assertIn("DSH_OPENAI_GATEWAY_ENABLED", script)
+        self.assertIn("DSH_OPENAI_GATEWAY_ENABLED = '0'", script)
+        # 必须是在 load()/apply() 之前设好；apply 之后设已经晚了。
+        self.assertLess(script.index("DSH_OPENAI_GATEWAY_ENABLED = '0'"),
+                        script.index("await mod.apply(ctx, {})"))
+
+    def test_bridge_reads_the_real_credentials_store(self):
+        """桥的凭据库必须是真的那个文件，不是内存 Map。
+
+        这也是一条回归：桥原本用内存 `Map` 顶替 `ctx.credentials`，于是插件
+        账号的 token 从来没被读到过——`credits.balances` 对每个账号都报
+        「凭据未配置」，对话也发不出去，而账号状态明明是 active。
+        """
+        script = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "pack_bridge.mjs").read_text(encoding="utf-8")
+        self.assertIn("@deepseek-ai/dsh-credentials-local", script)
+        self.assertIn(".credentials.yaml", script)
+        # 内存实现只允许作为装载失败时的退路，且必须留痕。
+        self.assertIn("memory-fallback", script)
 
 
 if __name__ == "__main__":

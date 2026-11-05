@@ -1,11 +1,12 @@
 """未接入的能力必须显式报错，不能返回「空成功」。
 
-背景：本机网关只实现了 13 家渠道里的一个子集，但前端沿用原插件的静态能力表。
-两边不一致时，页面会渲染出点下去必然失败的按钮，而失败原因被写成
-「未返回余额数据」——和「接口 502」完全同形。这组测试锁住三点：
+背景：本机网关把 13 家渠道里的 12 家转发给插件的 `channel-pack`，只自己实现
+Antigravity。前端沿用原插件的静态能力表，两边不一致时页面会渲染出点下去必然
+失败的按钮，而失败原因被写成「未返回余额数据」——和「接口 502」完全同形。
+这组测试锁住三点：
   1. `provider.status` 如实申报每个渠道实现了什么；
-  2. 没实现的写操作报「尚未接入」，而不是默默成功；
-  3. 没实现的读操作给出的原因能落到页面上，不是空数组。
+  2. 能力声明与 RPC 的真实行为一致（申报 False 必须真的拒绝）；
+  3. 读操作给出的原因能落到页面上，不是空数组。
 """
 
 import json
@@ -20,7 +21,8 @@ from config import Settings
 from demo_upstream import transport_for
 from main import app
 from upstream_client import UpstreamClient
-from web_api import CHANNELS, WebManager, channel_capabilities
+from web_api import (CHANNELS, _PLUGIN_CLAIM, _PLUGIN_CREDIT_STATUS, WebManager,
+                     channel_capabilities)
 from test_gateway import completion
 
 
@@ -61,26 +63,28 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         for channel, row in statuses.items():
             self.assertIn("capabilities", row, channel)
             caps = row["capabilities"]
-            # 没有任何渠道在这一侧接入签到/领积分。
-            self.assertFalse(caps["claim"], channel)
+            # 没有后台签到引擎：自动签到是插件的调度，不在本机网关里。
             self.assertFalse(caps["checkin"], channel)
-            self.assertFalse(caps["creditStatus"], channel)
-            # 只有 antigravity 有真实配额目录与可刷新的上游。
-            expected = channel == "antigravity"
-            self.assertEqual(caps["balances"], expected, channel)
-            self.assertEqual(caps["refresh"], expected, channel)
+            # 12 家的余额由插件查询（token 在 ~/.dsh/.credentials.yaml），
+            # antigravity 则读本机 OAuth 目录。两侧都有余额能力。
+            self.assertTrue(caps["balances"], channel)
+            self.assertTrue(caps["refresh"], channel)
+            # 领取与签到状态必须以 pack.js 的分支清单为准，不能凭印象声明：
+            # 声明了但那边没实现，按钮点下去就是一句「操作失败」。
+            self.assertEqual(caps["claim"], channel in _PLUGIN_CLAIM, channel)
+            self.assertEqual(caps["creditStatus"], channel in _PLUGIN_CREDIT_STATUS, channel)
 
     async def test_capabilities_are_consistent_with_the_actual_rpc_behaviour(self):
-        """申报为 False 的能力，对应 RPC 必须真的拒绝；申报为 True 的必须真的可读。"""
-        caps = channel_capabilities("buddy")
-        self.assertFalse(caps["claim"])
-        self.assertFalse(caps["balances"])
+        """申报为 False 的能力，对应 RPC 必须真的拒绝。"""
+        caps = channel_capabilities("workbuddy")
+        self.assertFalse(caps["claim"])          # pack.js 明确回「没有签到接口」
+        self.assertTrue(caps["balances"])        # 但余额查得到
 
-        claim = await self.rpc("credits.claimAll", {"provider": "buddy"})
+        claim = await self.rpc("credits.claimAll", {"provider": "workbuddy"})
         self.assertEqual(claim.status_code, 400)
-        self.assertIn("尚未接入本机网关", claim.json()["error"]["message"])
+        self.assertIn("没有签到接口", claim.json()["error"]["message"])
 
-        checkin = await self.rpc("usage.autoCheckin", {"provider": "buddy", "enabled": True})
+        checkin = await self.rpc("usage.autoCheckin", {"provider": "workbuddy", "enabled": True})
         self.assertEqual(checkin.status_code, 400)
         self.assertIn("尚未接入本机网关", checkin.json()["error"]["message"])
 
@@ -89,23 +93,36 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read.status_code, 200)
         self.assertIsNone(read.json()["value"]["autoCheckin"])
 
-    async def test_balances_explain_themselves_instead_of_returning_empty(self):
-        """空数组在页面上长成「未返回余额数据」，和接口故障无法区分。"""
+    async def test_antigravity_claim_is_refused_with_its_own_reason(self):
+        """antigravity 的配额按 OAuth 目录读，没有签到这个概念。"""
+        response = await self.rpc("credits.claimAll", {"provider": "antigravity"})
+        self.assertEqual(response.status_code, 400)
+        message = response.json()["error"]["message"]
+        self.assertIn("antigravity", message)
+        self.assertIn("OAuth", message)
+
+    async def test_balances_forward_to_plugin_instead_of_returning_empty(self):
+        """余额必须真的转发给插件，而不是编一句「没有余额接口」。
+
+        以前这里对 12 家一律返回「本机网关没有余额接口」，于是页面上每个插件
+        账号都显示「未返回余额数据」——而积分其实查得到。判据是「插件的
+        `credits.balances` 被调用过」，而不是「返回了非空列表」：测试环境里
+        没有真插件账号，非空与否取决于外部状态。
+        """
+        seen = []
+
+        async def fake_call(method, payload=None, *, attempts=5):
+            seen.append((method, payload))
+            if method == "account.list":
+                return {"accounts": []}
+            if method == "credits.balances":
+                return {"accounts": [], "windowDays": 15}
+            raise AssertionError(f"unexpected bridge call: {method}")
+
+        self.web.bridge.call = fake_call
         response = await self.rpc("credits.balances", {"provider": "buddy"})
         self.assertEqual(response.status_code, 200)
-        rows = response.json()["value"]["accounts"]
-        self.assertEqual([row["accountId"] for row in rows], ["primary"])
-        self.assertIsNone(rows[0]["balance"])
-        self.assertIn("尚未接入本机网关", rows[0]["error"])
-        self.assertIn("兼容上游", rows[0]["error"])
-
-    async def test_claim_all_is_refused_on_every_channel(self):
-        statuses = (await self.rpc("provider.status", {})).json()["value"]["statuses"]
-        for channel in CHANNELS:
-            self.assertFalse(statuses[channel]["capabilities"]["claim"], channel)
-            response = await self.rpc("credits.claimAll", {"provider": channel})
-            self.assertEqual(response.status_code, 400, channel)
-            self.assertIn("尚未接入本机网关", response.json()["error"]["message"])
+        self.assertIn("credits.balances", [m for m, _ in seen])
 
     async def test_clear_dead_names_the_real_reason(self):
         response = await self.rpc("model.clearDead", {"provider": "buddy", "modelId": "chat"})
@@ -115,12 +132,11 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("该操作", message)
 
     async def test_capability_error_names_the_channel_and_the_feature(self):
-        response = await self.rpc("credits.claimAll", {"provider": "qoder"})
+        """没实现的能力，报错必须说清是哪个渠道的哪个功能。"""
+        response = await self.rpc("model.clearDead", {"provider": "qoder"})
         message = response.json()["error"]["message"]
         self.assertIn("qoder", message)
-        self.assertIn("积分领取", message)
-        # 提示必须告诉用户替代路径，否则「没实现」等于死路。
-        self.assertIn("兼容上游", message)
+        self.assertIn("下架模型恢复", message)
 
     async def test_frontend_defers_to_declared_capabilities(self):
         """页面必须读取声明表，否则它照静态表画出的按钮永远点不通。"""
@@ -132,21 +148,16 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         # 静态表本身保留：它是「插件全部实现时」的样子，作为回落值。
         self.assertIn("const CHANNEL_CREDITS = {", runtime)
 
-    async def test_frontend_explains_absent_balance_instead_of_hiding_it(self):
-        """没有余额接口时要说明原因。
+    async def test_quota_board_shows_plugin_credits(self):
+        """配额看板必须把插件积分读出来，不能只显示并发负载。
 
-        隐藏按钮是对的，但只隐藏会让卡片上「账号 1/1」旁边空无一物，用户以为
-        余额还在加载。所以对有账号却没余额接口的渠道，卡片上必须有一句说明。
+        「看不到积分」是用户直接报过的问题：看板只画 antigravity 的三个池，
+        插件账号那一列是个空的并发条。判据是看板真的去要了 `credits.balances`。
         """
-        runtime = (await self.client.get("/assets/channel-runtime.js")).text
-        self.assertIn("accountsCount > 0 && !can('balances')", runtime)
-        self.assertIn("t('chan.balance.absent')", runtime)
-
-        page = (await self.client.get("/assets/app.mjs")).text
-        self.assertIn("'chan.balance.absent'", page)
-        # 文案必须交代「账号可用、配额在上游」，不能只说「未接入」就结束。
-        self.assertIn("本机网关未接入", page)
-        self.assertIn("上游", page)
+        page = (await self.client.get("/assets/quota.mjs")).text
+        self.assertIn("credits.balances", page)
+        self.assertIn("balance.packages", page)
+        self.assertIn("balanceError", page)
 
 
 if __name__ == "__main__":

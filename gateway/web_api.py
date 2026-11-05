@@ -36,18 +36,41 @@ def channel_capabilities(channel: str) -> dict:
     """本机网关对该渠道**实际实现**的能力，供页面决定渲染哪些按钮。
 
     页面沿用原插件的静态能力表（`CHANNEL_CREDITS`），那张表描述的是插件侧
-    13 家全部实现时的状态；本机网关是 Python 侧的子集实现。两边不一致时，
+    13 家全部实现时的状态；本机网关是 Python 侧的实现。两边不一致时，
     页面就会渲染出一个点下去必然失败的按钮，用户只会看到「操作失败」而不知道
     是自己配错了还是根本没做。能力以这里为准。
+
+    12 家插件渠道的积分查询/领取/签到现在**转发给插件**（凭据在
+    `~/.dsh/.credentials.yaml`，由桥接进程读取），所以能力取决于 pack.js 里
+    有没有对应分支，而不是取决于本机网关写了多少 Python。下面两张表就是
+    pack.js `credits.status` / `credits.claimAll` 的分支清单；改那边要同步改这里，
+    否则页面又会渲染出点不动的按钮。
     """
-    real_quota = channel == "antigravity"
+    if channel == "antigravity":
+        # 只有 antigravity 的配额目录在本机（OAuth 凭据在 .gateway-auth/）。
+        return {"claim": False, "checkin": False, "creditStatus": False,
+                "balances": True, "refresh": True}
     return {
-        "claim": False,        # 没有任何渠道在这一侧接入积分领取
-        "checkin": False,      # 没有后台签到引擎
-        "creditStatus": False,  # 没有「今日已签到」这类状态
-        "balances": real_quota,  # 只有 antigravity 有真实配额目录
-        "refresh": real_quota,   # 只有 antigravity 有可刷新的上游目录
+        "claim": channel in _PLUGIN_CLAIM,
+        "checkin": False,       # 没有后台签到引擎（自动签到是插件的调度，不在本机）
+        "creditStatus": channel in _PLUGIN_CREDIT_STATUS,
+        "balances": True,       # pack.js 对 12 家都有 credits.balances 分支
+        "refresh": True,        # 令牌续期转发给插件的 account.refresh
     }
+
+
+# pack.js `credits.status` 有分支的渠道。qoder 系、raccoon、zcode 没有独立状态
+# 端点，调用会得到 `unsupported provider`，所以不声明。
+_PLUGIN_CREDIT_STATUS = frozenset({
+    "codearts", "buddy", "workbuddy", "lobsterai", "trae", "cline", "loomy", "minimax",
+})
+
+# pack.js `credits.claimAll` 有签到实现的渠道。cline / workbuddy / raccoon 明确
+# 返回「后端没有签到接口」，不声明。
+_PLUGIN_CLAIM = frozenset({
+    "codearts", "buddy", "lobsterai", "qoder", "qodercn", "trae", "loomy",
+    "minimax", "zcode",
+})
 
 
 def failure(message: str, status: int = 400):
@@ -287,6 +310,28 @@ class WebManager:
             return True
         return False
 
+    async def _plugin_owner(self, account_id: str) -> str | None:
+        """这个 id 属于插件里的哪个渠道；不在插件里返回 None。
+
+        `account.update` / `account.refresh` / `account.test` 以前只看本机
+        `accounts.json`，于是插件账号一按下就报「账号不存在」——账号明明在页面
+        上、就在上一个接口里返回给前端过。三个动作的归属判断共用这一处，避免
+        逐个补丁又漏掉一个。
+        """
+        if not account_id:
+            return None
+        for provider in CHANNELS:
+            if provider == "antigravity":
+                continue
+            try:
+                value = await self.bridge.call("account.list", {"provider": provider})
+            except BridgeError:
+                continue
+            for row in (value or {}).get("accounts") or []:
+                if row.get("id") == account_id:
+                    return provider
+        return None
+
     async def _update_in_plugin(self, account_id: str, enabled: bool) -> None:
         try:
             await self.bridge.call("account.update", {
@@ -315,25 +360,48 @@ class WebManager:
         12 家的账号由插件持有：登录、凭据、刷新、限流都在那边。网关不复制凭据，
         只把「有哪些账号」如实报给页面——否则用户在插件里登录完了，这里还是 0/0。
 
-        **占位记录只显示本次会话正在登录的那个。** `account.create` 会先往插件
-        账号表里写一条「昵称等于 id」的行，登录没完成时它不会自己消失。历史遗留的
-        这类空壳一律不显示并顺手删掉，否则页面会出现「账号 0/21」——一个都点不动，
-        却占着 21 个位置。
+        **占位记录只有「确实还在登录中」的才算数。** `account.create` 会先往插件
+        账号表里写一条「昵称等于 id」的行，登录完成后才补上凭据。登录窗口中途丢了
+        （浏览器被关、进程重启）时，这条记录会永久留着，形状与「正在登录」完全
+        相同，于是页面上多出一个点不动的「等待授权」账号。
+
+        判据因此不是「昵称等于 id」，而是「凭据是否存在」：
+          - 有凭据 → 真账号，正常显示；
+          - 没凭据且本次会话正在等它 → 等待授权；
+          - 没凭据且没人等 → 遗留空壳，不显示并顺手删掉。
+        最后一种以前靠「`account_id not in self.bridged`」判断，进程一重启就失效
+        （新的 bridged 是空的，旧占位被当成新登录）。
         """
         try:
             value = await self.bridge.call("account.list", {"provider": provider})
         except BridgeError:
             return []
+        entries = [entry for entry in (value or {}).get("accounts") or []
+                   if isinstance(entry, dict) and entry.get("id")]
+        placeholders = [entry["id"] for entry in entries
+                        if (entry.get("nickname") or entry["id"]) == entry["id"]]
+        # `present[id]` 三态：True 有凭据、False 确定没有、缺失则是「问不到」。
+        # 问不到时退回旧判据（本次会话在等的那些），不再一律当成占位——那会把
+        # 真账号也藏掉。
+        present: dict[str, bool] = {}
+        if placeholders:
+            try:
+                answer = await self.bridge.call("credential.presence", {
+                    "provider": provider, "accountIds": placeholders})
+                present = {k: v for k, v in (answer or {}).get("present", {}).items()
+                           if isinstance(v, bool)}
+            except Exception:  # noqa: BLE001 - 可选增强，任何失败都退回旧判据
+                present = {}
         out, stale = [], []
-        for entry in (value or {}).get("accounts") or []:
-            if not isinstance(entry, dict) or not entry.get("id"):
-                continue
+        for entry in entries:
             account_id = entry["id"]
             nickname = entry.get("nickname") or account_id
-            # `account.create` 会先写一条「昵称等于 id」的占位记录，登录完成后才
-            # 换成真实昵称/邮箱。只有本次会话正在等它的那个才值得显示。
-            pending = nickname == account_id
-            if pending and account_id not in self.bridged:
+            # 昵称等于 id 是「占位记录」的**候选**；有凭据就说明它其实是真账号
+            # （登录完成了但没拿到昵称），不能当空壳删。
+            candidate = nickname == account_id
+            has_credential = present.get(account_id)
+            pending = candidate and has_credential is not True and account_id in self.bridged
+            if candidate and has_credential is not True and not pending:
                 stale.append(account_id)
                 continue
             enabled = entry.get("enabled") is not False
@@ -461,9 +529,16 @@ class WebManager:
                                    if m["id"] not in aliases]
             return {"models": models}
         if method == "credits.status":
-            # 只有 buddy / minimax 在页面里读这个字段（今日签到徽标）。本机网关没有
-            # 签到体系，返回空数组就是「没有可展示的签到状态」，页面不渲染徽标。
-            return {"accounts": []}
+            # 签到状态归插件：各家的 `checked_in` 字段形状不同，pack.js 已经
+            # 按渠道解析过。没有状态的渠道（qoder 系、raccoon、zcode）由 pack.js
+            # 回 `unsupported provider`，这里当「没有可展示的状态」处理，不报错。
+            if provider is None or provider == "antigravity":
+                return {"accounts": []}
+            try:
+                value = await self.bridge.call("credits.status", {"provider": provider})
+            except BridgeError:
+                return {"accounts": []}
+            return value or {"accounts": []}
         if method == "credits.balances":
             if provider == "antigravity":
                 balances = []
@@ -483,18 +558,51 @@ class WebManager:
                     except OAuthFailure as exc:
                         balances.append({"accountId": row["id"], "balance": None, "error": str(exc)})
                 return {"accounts": balances}
-            # 其余渠道没有可查询的余额接口。返回空数组会让每一行显示「未返回余额数据」，
-            # 与「接口 502」完全同形；这里把原因写进每个账号，页面逐行照出来。
-            reason = unsupported(provider, "余额查询",
-                                 "该渠道在本机只能是导入的兼容上游，余额以你自己的上游为准")
-            return {"accounts": [{"accountId": row["id"], "balance": None, "error": reason}
-                                 for row in selected]}
+            # 12 家的余额由插件查询：token 在 `~/.dsh/.credentials.yaml`，各家的
+            # 余额端点、积分包结构、失败原因都在 pack.js 里。
+            #
+            # 以前这里一律返回「本机网关没有余额接口」，于是页面上每个插件账号
+            # 都显示「未返回余额数据」——而用户的积分明明是可以查到的。网关不
+            # 该替插件回答它其实答得出来的问题。
+            try:
+                value = await self.bridge.call("credits.balances", {
+                    "provider": provider, **({"force": True} if payload.get("force") else {})})
+            except BridgeError as exc:
+                reason = f"余额查询失败：{exc}"
+                return {"accounts": [{"accountId": row["id"], "balance": None, "error": reason}
+                                     for row in selected]}
+            rows_by_id = {row["id"]: row for row in selected}
+            # 插件账号不在 `selected`（那是本机 accounts.json 的行）里，所以
+            # 白名单只能取「本机该渠道的账号 ∪ 插件该渠道的账号」。只用前者过滤
+            # 会把插件的每一行都丢掉，返回一个看起来成功、实际全空的列表。
+            plugin_rows = {row["id"]: row for row in await self.plugin_accounts(provider)}
+            known = {**plugin_rows, **rows_by_id}
+            merged = []
+            for entry in (value or {}).get("accounts") or []:
+                if not isinstance(entry, dict) or not entry.get("accountId"):
+                    continue
+                account_id = entry["accountId"]
+                # 插件对「登录中」的占位账号也会回一行；页面上没有它就不显示。
+                if account_id not in known:
+                    continue
+                merged.append({**entry, "provider": provider,
+                               "nickname": entry.get("nickname") or known[account_id]["nickname"]})
+            return {"accounts": merged, "windowDays": (value or {}).get("windowDays")}
         if method == "credits.claimAll":
-            # 只有 antigravity 有真实配额；其余渠道在本机网关里是「导入的兼容上游」，
-            # 没有可签到的账号体系。以前这里报的是「当前驱动尚未接入」，页面把它当
-            # 成一次失败的写操作，用户会反复重试一个永远不可能成功的按钮。
-            raise ValueError(unsupported(provider, "积分领取",
-                                         "多数渠道只有导入的兼容上游，没有签到接口"))
+            # antigravity 的配额由本机 OAuth 目录读取，没有「签到」这个动作；
+            # 桥会把 provider 映射成 pack.js 的 `gemini`，那边确实有领取实现，
+            # 但用的不是本机这份凭据。转发过去只会打到一个无关账号上。
+            if provider is None or provider == "antigravity":
+                raise ValueError(unsupported(provider, "积分领取",
+                                             "本机按 OAuth 目录读取配额，没有签到接口"))
+            # 领取/签到同样交给插件：预检、幂等处理、设备指纹轮换都在那边。
+            # 没有实现的渠道由 pack.js 自己给出具体原因（例如「后端没有签到
+            # 接口」），比网关编一句「尚未接入」准确。
+            try:
+                value = await self.bridge.call("credits.claimAll", {"provider": provider})
+            except BridgeError as exc:
+                raise ValueError(str(exc)) from None
+            return value or {"results": [], "summary": {}}
         if method == "usage.autoCheckin":
             if "enabled" in payload:
                 raise ValueError(unsupported(provider, "自动签到", "本机网关没有后台签到引擎"))
@@ -579,7 +687,10 @@ class WebManager:
             if not isinstance(patch, dict) or type(patch.get("enabled")) is not bool or set(patch) != {"enabled"}:
                 raise ValueError("仅支持启用或停用账号")
             owner = next((r for r in rows if r["id"] == account_id), None)
-            if owner is not None and owner.get("source") == "plugin":
+            if owner is None and await self._plugin_owner(account_id):
+                # 页面调用 account.update 时不带 provider，`rows` 里只有本机账号，
+                # 所以插件账号在这里必然查不到。以前那就直接落到 find_account 抛
+                # 「账号不存在」——调度开关因此点不动。
                 await self._update_in_plugin(account_id, patch["enabled"])
                 return {"ok": True}
             await self.commit(lambda raw: find_account(raw).update(
@@ -588,9 +699,15 @@ class WebManager:
         if method == "account.refresh":
             target = next((r for r in rows if r["id"] == account_id), None)
             if target is None:
-                raise ValueError("账号不存在")
-            if target.get("source") == "plugin":
-                # 插件的刷新是它自己的事（令牌续期在那边），网关只需重新读表。
+                plugin_provider = await self._plugin_owner(account_id)
+                if plugin_provider is None:
+                    raise ValueError("账号不存在")
+                # 令牌续期是插件自己的事；但「刷新」按钮按下去必须有真实动作，
+                # 否则用户看到的是一句成功的空操作。交给插件的 account.refresh。
+                try:
+                    await self.bridge.call("account.refresh", {"accountId": account_id}, attempts=1)
+                except BridgeError as exc:
+                    raise ValueError(f"刷新失败：{exc}") from None
                 return {"ok": True}
             if target["driver"] == "antigravity":
                 await self.refresh_oauth_account(account_id)
@@ -620,6 +737,15 @@ class WebManager:
         if method == "account.test":
             target = next((r for r in rows if r["id"] == account_id), None)
             if target is None:
+                # 插件账号的探活是插件自己的 `account.test`（它知道选哪个模型、
+                # 走哪条出站链路）。这里转发而不是假装本机测过了。
+                if await self._plugin_owner(account_id):
+                    try:
+                        value = await self.bridge.call(
+                            "account.test", {"accountId": account_id}, attempts=1)
+                    except BridgeError as exc:
+                        return {"ok": False, "error": str(exc)}
+                    return value if isinstance(value, dict) else {"ok": False, "error": "插件未返回测试结果"}
                 raise ValueError("账号不存在")
             aliases = [m for m in target["models"] if m not in target["disabled_models"]]
             if not aliases:

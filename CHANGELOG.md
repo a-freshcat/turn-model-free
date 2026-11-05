@@ -1,5 +1,81 @@
 # 版本变更
 
+## v1.2.3 — 2026-11-05
+
+修掉三个让「账号在、按钮在，却什么都不对」的根因。三者都跟界面无关，都是桥接
+层把插件的运行时环境装错了。
+
+### 凭据：桥接进程读的是真凭据库，不是内存 Map
+
+`scripts/pack_bridge.mjs` 里 `ctx.credentials` 原本是个启动即为空的内存 `Map`。
+账号凭据（`WORKBUDDY_ACCOUNT_*` 之类）由 DSH 写在 `~/.dsh/.credentials.yaml`
+的 `refs` 下，这个 Map 从来没读过那个文件。后果是连锁的：
+
+- `credits.balances` 对每个账号都报「凭据未配置」——积分一条都查不到；
+- 对话发不出去（`upstream stream ended before finish`），而账号状态是 active；
+- 登录完成后 `ctx.credentials.set` 也写进内存，DSH 那边看不到新账号。
+
+现在挂载宿主自己的 `@deepseek-ai/dsh-credentials-local`，读走文件、写回文件。
+它是个 cordis Service，`ctx.plugin()` 会把 `credentials` 注册进 fiber store，
+而 pack.js 是 `apply(ctx)` 裸调用的模块，直接读会抛
+`cannot get property "credentials" without inject`；所以在**独立的 Context**
+里完成初始化，再把成形的服务对象作为普通属性交给主 ctx。装载失败才退回内存
+实现，并在 `ready` 行里写明 `memory-fallback`——静默退化正是这个缺陷原来的样子。
+
+实测：workbuddy 130 / 100 credits，raccoon 4,029 / 5,368 积分，都读到了。
+
+### 端口：桥不再抢 DSH 的 openai-gateway
+
+`pack.js` 的 `apply()` 会顺带启动它自带的 OpenAI 兼容网关，默认监听
+`127.0.0.1:8326` —— 那正是 DSH 里这个网关的端口。桥是只做登录/查询转发的
+子进程，两个进程抢同一端口的结果是**谁先起来谁占着**，另一个 bind 失败后
+静默降级。实测现象：8326 被桥占据，`/v1/models` 回空数组、对话回 502，
+看起来像插件坏了，实际是一个辅助进程冒名顶替了服务端。
+
+桥不需要那个网关（它只用 `channel-pack` 这组 RPC），现在显式
+`DSH_OPENAI_GATEWAY_ENABLED=0` 关掉。需要时用同名环境变量覆盖即可。
+
+### 账号操作：update / refresh / test 不再报「账号不存在」
+
+`account.delete` 早先已经补了「先问插件」，但另外三个动作仍然只看本机
+`accounts.json`，而插件账号不在那张表里。于是账号的调度开关、刷新、测试
+一按就是「账号不存在」。现在三个动作共用 `_plugin_owner()` 归属判断：
+插件账号的停用走 `account.update`，刷新与探活转发给插件自己的实现——
+按下「刷新」必须有真实动作，不能是一句成功的空操作。
+
+### 占位账号：判据从「昵称等于 id」改成「凭据是否存在」
+
+`account.create` 会先写一条「昵称等于 id」的占位记录，登录完成后才补凭据。
+登录窗口中途丢了（浏览器被关、进程重启）时，那条记录会永久留着，形状与
+「正在登录」完全一致，于是页面上多出一个点不动的「等待授权」账号——用户报的
+就是「我还没添加账号，怎么残留了以前的数据」。
+
+旧判据是「本次会话的 `bridged` 表里有没有它」，进程一重启就失效（新的表是空的，
+旧占位被当成新登录）。现在问桥 `credential.presence`：有凭据的是真账号
+（哪怕昵称等于 id），没凭据且没人等的才是空壳，清掉。
+
+### 积分与能力申报
+
+- `credits.balances` / `credits.status` / `credits.claimAll` 转发给插件。
+  此前 12 家一律返回「本机网关没有余额接口」，页面上每个插件账号都显示
+  「未返回余额数据」——而积分其实查得到。
+- `provider.status` 的能力申报改为以 pack.js 的分支清单为准
+  （`_PLUGIN_CLAIM` / `_PLUGIN_CREDIT_STATUS`）。声明了但那边没实现的，
+  按钮点下去只会得到一句「操作失败」。
+- 配额看板的条件判断修正：原来用「`/ui/state` 的账号比看板多」判断是否需要
+  查询插件账号，而 `/ui/state` 只含本机 `accounts.json`；只有 1 个 antigravity
+  账号时两边都是 1，条件恒为假，看板永远只剩一个账号。改为无条件问
+  `provider.status`。
+- 配额看板的外部渠道行改为显示**积分包明细**（包名 / 剩余 / 有效期 / 进度条）。
+  此前那一列只有一个并发负载条，用户看不到任何积分。
+- `quota.mjs` 的资源版本号 +1，避免浏览器缓存住旧的 ES module。
+
+### 测试
+
+`124 passed, 1 skipped`（源目录与 `gateway/` 镜像各自独立跑同一结果）。
+新增的回归用例锁住上面每一条：桥不许抢端口、桥必须读真凭据库、
+有凭据的占位不能删、重启后旧占位必须清掉、余额必须真的转发给插件。
+
 ## v1.2.2 — 2026-11-05
 
 收口 v1.2.1 的两个缺口：**插件里登录过的账号网关上不显示**，以及**界面还是旧版**。
