@@ -1,3 +1,25 @@
+# free-m-clone v1.2.0
+
+本版本新增 **本机 OpenAI 兼容 API、Antigravity Google OAuth、账号池与三个配额池看板**，沿用原渠道界面风格。
+
+新服务位于 [`gateway/`](gateway/README.md)。首次安装：
+
+```powershell
+python -m venv gateway/.venv
+gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
+.\launch-web.cmd
+```
+
+双击根目录 `launch-web.cmd` 启动并打开网页；从渠道页进入「配额看板 · 三个池」。
+发布包不含账号、登录令牌、依赖或个人页面截图；默认可用离线演示号池启动。
+详见 [网关使用说明](gateway/README.md) 和 [版本变更](CHANGELOG.md)。
+
+原演示页、腾讯防护层与测试保留在原目录。下文为原项目说明。
+
+本次发布验证：网关 52 项 Python 测试、配额分组及 HTTP/SSE 测试通过。原项目回归为 78/79；唯一失败项为本机已安装插件升级后与旧来源快照哈希不一致，详见 CHANGELOG。
+
+---
+
 # free-m-clone · 白嫖模型接入（抄写版 + 腾讯 11128 防护）
 
 `dsh-our-free-model` 插件里「白嫖模型接入」页面的独立抄写版，**并把该插件的腾讯渠道防护层

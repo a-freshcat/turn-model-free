@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>白嫖模型接入 · 本机号池</title>
+  <link rel="stylesheet" href="/assets/vendor/free-m-clone/dist/demo.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="demo-shell" id="dashboard-shell">
+    <header class="demo-head">
+      <h1>白嫖模型接入</h1>
+      <span class="demo-badge">plugin v2.5.4 · 本机统一 API</span>
+      <p id="mode-note">正在连接本机号池…</p>
+    </header>
+    <main><div id="page-root" class="ofm_root"></div></main>
+    <aside class="demo-side">
+      <section class="control-card">
+        <h2>服务 / 语言 / 主题</h2>
+        <div id="controls">
+          <div class="gateway-summary" id="service-state">等待连接</div>
+          <label>API 地址 <span class="endpoint-line"><code id="api-base">—</code><button id="copy-api" type="button">复制</button></span></label>
+          <label>语言<select id="locale"><option value="zh">中文</option><option value="en">English</option></select></label>
+          <button type="button" id="theme">切换深色</button>
+          <button type="button" id="refresh">刷新号池状态</button>
+          <a class="ofm_btn ghost" href="/quota" target="_blank" rel="noopener">配额看板 · 三个池</a>
+          <button type="button" id="reconnect">重新连接</button>
+        </div>
+      </section>
+      <section class="control-card">
+        <h2>接口测试</h2>
+        <form id="chat-form" class="guard-form">
+          <label class="guard-row">模型<select id="chat-model" aria-label="测试模型" required></select></label>
+          <button class="ofm_minibtn" id="model-more" type="button">显示其他 Gemini / 内部型号</button>
+          <label class="guard-row">消息<textarea id="chat-message" rows="3" required>你好，请简单介绍一下自己。</textarea></label>
+          <div class="guard-actions"><button class="ofm_btn" id="chat-submit" type="submit">发送测试</button><button class="ofm_btn ghost" id="chat-stop" type="button" disabled>停止</button></div>
+          <pre id="chat-output" class="guard-pre" aria-live="polite">选择一个模型，测试实际的流式接口。</pre>
+        </form>
+      </section>
+      <section class="control-card">
+        <h2>RPC 调用（最新在上）</h2>
+        <div id="rpc-log" aria-live="polite"></div>
+      </section>
+      <section class="control-card">
+        <h2>说明</h2>
+        <p class="demo-note">渠道卡、图标、折叠列表和昼夜配色直接沿用本地 free-m-clone。账号与模型操作连接本机号池。</p>
+        <p class="demo-note gateway-note">Antigravity 使用 Google 浏览器授权，凭据保存在本机。其他渠道可导入已有兼容上游配置；签到等能力由实际驱动提供。</p>
+        <p class="demo-note gateway-note"><a href="/docs" target="_blank" rel="noopener">API 文档</a><span> · </span><a href="/healthz" target="_blank" rel="noopener">服务状态</a></p>
+      </section>
+    </aside>
+  </div>
+  <div id="auth-scrim" class="ofm_scrim" hidden>
+    <form id="auth-form" class="ofm_modal gateway-form">
+      <div class="ofm_modalhead">连接本机号池</div>
+      <p class="ofm_note">输入启动窗口显示的网关密钥。此密钥用于管理本机服务。</p>
+      <label class="guard-row">网关密钥<input id="gateway-key" type="password" autocomplete="off" required></label>
+      <p id="auth-error" class="ofm_balanceerror" role="alert"></p>
+      <div class="ofm_modalfoot"><button class="ofm_btn primary" type="submit">连接</button></div>
+    </form>
+  </div>
+  <main id="connect-shell" class="connect-shell" hidden>
+    <form id="import-form" class="ofm_hero ofm_glass gateway-form">
+      <div class="ofm_pagetitle"><h2>添加账号</h2><p id="import-note" class="ofm_pagesub">正在读取添加窗口…</p></div>
+      <label class="guard-row">账号 ID<input name="id" required pattern="[A-Za-z0-9_.-]{1,64}" maxlength="64" placeholder="account-01"></label>
+      <label class="guard-row">显示名称<input name="nickname" maxlength="64" placeholder="用于区分你的账号"></label>
+      <label class="guard-row" id="endpoint-field">完整 Chat Completions 地址<input name="endpoint" type="url" placeholder="https://provider.example/v1/chat/completions"></label>
+      <label class="guard-row">模型映射（对外名称 → 上游模型 ID）<textarea name="models" rows="4" required spellcheck="false">{"local-chat":"provider-model-id"}</textarea></label>
+      <div id="credential-fields">
+        <label class="guard-row">凭据类型<select name="credential_type"><option value="token_env">Token 环境变量</option><option value="token">Bearer Token</option><option value="cookie_env">Cookie 环境变量</option><option value="cookie">Cookie</option><option value="">无凭据</option></select></label>
+        <label class="guard-row gateway-note">凭据值 / 环境变量名<input name="credential" type="password" autocomplete="new-password"></label>
+      </div>
+      <label class="guard-row">单账号最大并发<input name="max_concurrency" type="number" min="1" max="32" value="1" required></label>
+      <p id="import-error" class="ofm_balanceerror" role="alert"></p>
+      <div class="guard-actions"><button class="ofm_btn primary" type="submit" id="import-submit">保存账号</button><button class="ofm_btn ghost" type="button" id="import-close">关闭窗口</button></div>
+    </form>
+  </main>
+  <script src="/assets/channel-runtime.js"></script>
+  <script type="module" src="/assets/app.mjs?v=20261105-ui2"></script>
+</body>
+</html>

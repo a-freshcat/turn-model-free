@@ -1,0 +1,30 @@
+{
+  "cooldown_seconds": 600,
+  "max_retries": 3,
+  "pool_wait_seconds": 1,
+  "first_output_timeout_seconds": 30,
+  "stream_timeout_seconds": 300,
+  "accounts": [
+    {
+      "id": "primary",
+      "driver": "openai",
+      "endpoint": "https://provider.example/v1/chat/completions",
+      "models": {"local-chat": "provider-model-id"},
+      "token_env": "UPSTREAM_PRIMARY_TOKEN",
+      "status": "active",
+      "fail_count": 0,
+      "max_concurrency": 1
+    },
+    {
+      "id": "secondary",
+      "driver": "openai",
+      "endpoint": "https://provider.example/v1/chat/completions",
+      "models": {"local-chat": "provider-model-id"},
+      "cookie_env": "UPSTREAM_SECONDARY_COOKIE",
+      "status": "disabled",
+      "fail_count": 0,
+      "max_concurrency": 1,
+      "tencent_prompt_level": 0
+    }
+  ]
+}

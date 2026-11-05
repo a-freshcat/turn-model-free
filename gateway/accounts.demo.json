@@ -1,0 +1,22 @@
+{
+  "cooldown_seconds": 600,
+  "max_retries": 3,
+  "accounts": [
+    {
+      "id": "demo-blocked",
+      "driver": "demo",
+      "models": {"demo-chat": "fixture-chat"},
+      "status": "active",
+      "fail_count": 0,
+      "max_concurrency": 1
+    },
+    {
+      "id": "demo-healthy",
+      "driver": "demo",
+      "models": {"demo-chat": "fixture-chat"},
+      "status": "active",
+      "fail_count": 0,
+      "max_concurrency": 1
+    }
+  ]
+}

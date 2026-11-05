@@ -1,0 +1,30 @@
+/* Host wiring only. Upstream channel-card styles and tokens are unchanged. */
+[hidden] { display: none !important; }
+.ofm_root { max-width: none; }
+.gateway-summary { font-size: 12px; line-height: 1.7; }
+.endpoint-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.endpoint-line code { flex: 1; overflow-wrap: anywhere; font-size: 11px; color: var(--dsw-alias-label-primary); }
+.gateway-note { margin-top: 9px; }
+.gateway-form { display: flex; flex-direction: column; gap: 12px; }
+.gateway-form input, .gateway-form select, .gateway-form textarea {
+  width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 1.6;
+  padding: 8px 10px; border-radius: 9px; color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2); box-sizing: border-box;
+}
+.gateway-form input:focus, .gateway-form select:focus, .gateway-form textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent);
+  outline-offset: 2px;
+}
+.connect-shell { max-width: 680px; margin: 40px auto; padding: 0 20px 40px; }
+.connect-shell .ofm_hero { overflow: visible; }
+.demo-note a { color: var(--dsw-alias-state-business-primary); text-decoration: none; }
+.demo-note a:hover { text-decoration: underline; }
+.ofm_scrim { z-index: 2000; }
+.guard-actions .ofm_btn:disabled { opacity: .5; cursor: default; }
+a.ofm_creditbadge { text-decoration: none; cursor: pointer; }
+#chat-output { min-height: 72px; max-height: 320px; }
+@media (max-width: 540px) {
+  .demo-shell { padding: 14px 10px 36px; gap: 16px; }
+  .connect-shell { margin: 20px auto; padding: 0 12px 24px; }
+}

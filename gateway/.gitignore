@@ -1,0 +1,10 @@
+.venv/
+.vendor/
+__pycache__/
+*.py[cod]
+accounts.json
+.env
+*.log
+.accounts-*.tmp
+.gateway-auth/
+.release/

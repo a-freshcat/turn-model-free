@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>配额看板 · 白嫖模型接入</title>
+  <link rel="stylesheet" href="/assets/vendor/free-m-clone/dist/demo.css">
+  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/quota.css">
+</head>
+<body>
+  <main class="quota-shell ofm_root">
+    <header class="ofm_hero ofm_glass">
+      <div class="ofm_pagehead">
+        <div class="ofm_pagetitle"><h2>配额看板</h2><p class="ofm_pagesub">三个独立配额池，按账号查看。型号明细默认折叠。</p></div>
+        <div class="quota-actions">
+          <a class="ofm_btn ghost" href="/">返回渠道</a>
+          <button class="ofm_btn" id="quota-theme" type="button">切换主题</button>
+          <button class="ofm_btn primary" id="quota-refresh" type="button">刷新配额</button>
+        </div>
+      </div>
+      <div class="quota-toolbar">
+        <label>账号 <select id="quota-account" aria-label="配额账号"><option value="">全部账号</option></select></label>
+        <span id="quota-updated" class="ofm_note">正在读取…</span>
+      </div>
+      <p class="ofm_note">池内数值一致时直接显示；返回不一致时取最低值，并在明细中标明范围。不跨池相加或平均。</p>
+    </header>
+    <p id="quota-error" class="ofm_balanceerror" role="alert"></p>
+    <div id="quota-accounts"></div>
+    <p id="quota-empty" class="ofm_note" hidden>暂无 Antigravity 账号。请先返回渠道页添加并完成 Google 授权。</p>
+  </main>
+  <div id="quota-auth" class="ofm_scrim" hidden>
+    <form id="quota-auth-form" class="ofm_modal gateway-form">
+      <div class="ofm_modalhead">连接本机号池</div>
+      <label class="guard-row">网关密钥<input id="quota-key" type="password" autocomplete="off" required></label>
+      <p id="quota-auth-error" class="ofm_balanceerror" role="alert"></p>
+      <div class="ofm_modalfoot"><button class="ofm_btn primary" type="submit">连接</button></div>
+    </form>
+  </div>
+  <script type="module" src="/assets/quota.mjs?v=20261105-3pools"></script>
+</body>
+</html>
