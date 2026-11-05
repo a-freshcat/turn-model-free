@@ -1,12 +1,18 @@
 @echo off
+rem ---------------------------------------------------------------------------
+rem Local address. Kept ASCII on purpose: cmd.exe reads this file as the OEM
+rem code page (936/GBK on Chinese Windows), so UTF-8 Chinese comments get
+rem decoded into garbage, swallow the next line, and run as commands. Notes in
+rem Chinese live in gateway\README.md and CHANGELOG.md instead.
+rem
+rem Default 8199 because 8000 is taken by another local web panel. If it is
+rem still busy (a previous window left running), the launcher now says which
+rem port and what to do. Change the port here: launch-web.cmd --port 8300
+rem ---------------------------------------------------------------------------
 setlocal
 pushd "%~dp0"
 if errorlevel 1 exit /b 1
 
-rem 本机地址。8000 被另一个 Web 插件面板占着，撞上去只会得到一句
-rem "Cannot start the loopback listener"，很难分辨是谁起失败。这里默认 8199，
-rem 并显式传给 launch_web.py —— 地址写在命令里，看一眼就知道面板在哪。
-rem 想换端口：launch-web.cmd --port 8300
 set "GATEWAY_PORT=8199"
 
 set "GATEWAY_PYTHON=python"

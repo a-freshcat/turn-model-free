@@ -86,6 +86,72 @@ async def _open_when_ready(server, base: str, *, no_browser: bool) -> None:
     print("Browser startup check timed out. Inspect the server output above.", flush=True)
 
 
+class PortInUse(RuntimeError):
+    """请求的端口已被别的进程监听。"""
+
+
+def _port_owner(port: int) -> str:
+    """尽力说出端口上现在是谁在监听；问不到就返回空串。
+
+    只用来把报错写清楚。拿不到进程信息（权限不足、netstat 不可用）不是错误——
+    那句话仍然告诉用户「端口被占」，只是少了进程名。
+    """
+    try:
+        listing = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
+                                 text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    pid = ""
+    for line in (listing.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[-2].upper() != "LISTENING":
+            continue
+        if parts[1].endswith(f":{port}") and parts[-1].isdigit():
+            pid = parts[-1]
+            break
+    if not pid:
+        return ""
+    try:
+        probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                               capture_output=True, text=True, timeout=5)
+        name = (probe.stdout or "").strip().split(",")[0].strip('"')
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    return f"PID {pid}" + (f"（{name}）" if name else "")
+
+
+def port_in_use_message(port: int) -> str:
+    """端口被占用时的完整说明。
+
+    只说 `try another --port` 等于让用户自己猜。实测最难分辨的一种情形是
+    **上一次启动的网关窗口还开着**：端口在听、页面也能打开，看起来像这个面板
+    起成功了，其实是旧进程。所以这里点名端口、点名占用者，并给出两条明确出路。
+    """
+    owner = _port_owner(port)
+    lines = [f"端口 {port} 已被占用，无法启动。" + (f"占用者：{owner}。" if owner else "")]
+    lines.append("常见原因：上一次启动的网关窗口还在运行，关掉那个窗口再试。")
+    lines.append(f"或者换一个端口：launch-web.cmd --port {port + 1}")
+    return "\n".join(lines)
+
+
+def _port_available(port: int) -> bool:
+    """端口现在能不能被我们独占。探测完立刻释放，真正的 bind 在 serve() 里。
+
+    竞态窗口只有几毫秒，且另一边是「上一次没关的窗口」这种不会突然抢的情况，
+    所以这里先探一次只为把报错提前，不代替 serve() 里的真 bind。
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 async def serve(port: int, *, no_browser: bool) -> None:
     import uvicorn
 
@@ -95,7 +161,15 @@ async def serve(port: int, *, no_browser: bool) -> None:
     if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     try:
-        sock.bind(("127.0.0.1", port))
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError as exc:
+            # 10048 (WSAEADDRINUSE) / 98 (Linux EADDRINUSE) / 48 (macOS)：端口被占。
+            # 这和「权限不足」「地址不可用」是不同的处置方式，必须分开说，
+            # 否则用户只知道起不来，不知道该关掉什么。
+            if exc.errno in {48, 98, 10048} or getattr(exc, "winerror", None) == 10048:
+                raise PortInUse(port_in_use_message(port)) from None
+            raise
         sock.listen(128)
         server = uvicorn.Server(uvicorn.Config(
             "main:app", host="127.0.0.1", port=port, workers=1, access_log=False,
@@ -147,19 +221,33 @@ def main() -> int:
     if not os.environ.get("GATEWAY_API_KEY"):
         os.environ["GATEWAY_API_KEY"] = _load_or_create_api_key()
 
+    # 先探端口，再打印「Mode / 密钥 / 请保持窗口打开」。
+    #
+    # 顺序很重要：原来是在 serve() 里 bind 失败，于是窗口先显示密钥、再报错，
+    # 看起来像「已经起来了只是有点问题」。端口冲突是启动前的确定失败，应该在
+    # 任何「看起来成功了」的输出之前就被拦下。
+    if not _port_available(args.port):
+        print(port_in_use_message(args.port), file=sys.stderr)
+        return 1
+
     print("Mode: " + ("configured upstream accounts" if account_path != ROOT / "accounts.demo.json" else "offline demo account pool"))
     print("Gateway API key (manual dashboard login or /docs -> Authorize):")
     print(os.environ["GATEWAY_API_KEY"])
     print("Keep this window open. Press Ctrl+C to stop the gateway.", flush=True)
     try:
         asyncio.run(serve(args.port, no_browser=args.no_browser))
+    except PortInUse as exc:
+        # 端口被占：说清是哪条端口、被谁占、两条出路都给出。
+        print(str(exc), file=sys.stderr)
+        return 1
     except ModuleNotFoundError:
         print("Dependencies are missing. Install requirements.txt first.", file=sys.stderr)
         return 1
     except OSError as exc:
-        # Do not print exception text that might include deployment details.
-        print(f"Cannot start the loopback listener (OS error {exc.errno}); try another --port.",
-              file=sys.stderr)
+        # 其余的 bind 失败（权限、地址不可用等）。不打印异常正文，它可能带上
+        # 部署细节；只给错误号，并指出换端口这条路不适用。
+        print(f"Cannot start the loopback listener on 127.0.0.1:{args.port} "
+              f"(OS error {exc.errno}).", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         pass

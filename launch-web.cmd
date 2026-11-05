@@ -1,7 +1,8 @@
 @echo off
-rem 双击入口。本机地址（端口）写在 gateway\launch-web.cmd 里，默认 8199：
-rem 8000 是本机另一个 Web 插件面板的位置，撞上去只会得到一句
-rem "Cannot start the loopback listener"，很难分辨是谁起失败。
-rem 想换端口：launch-web.cmd --port 8300
+rem Double-click entry point. The local address (port) is set in
+rem gateway\launch-web.cmd, default 8199. This file stays ASCII-only because
+rem cmd.exe decodes .cmd as the OEM code page and UTF-8 Chinese becomes mojibake.
+rem Notes in Chinese live in gateway\README.md and CHANGELOG.md.
+rem Change the port: launch-web.cmd --port 8300
 call "%~dp0gateway\launch-web.cmd" %*
 exit /b %ERRORLEVEL%

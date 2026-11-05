@@ -184,6 +184,63 @@ class LauncherPortTests(unittest.TestCase):
         self.assertIn('set "GATEWAY_PORT=8199"', script)
         self.assertIn("--port %GATEWAY_PORT%", script)
 
+    def test_cmd_files_are_pure_ascii(self):
+        """`.cmd` 里一个非 ASCII 字节都不能有。
+
+        这是用户直接踩到的坑：`cmd.exe` 按系统 OEM 代码页（中文 Windows 是
+        936/GBK）读取批处理文件，UTF-8 编码的中文注释被当成 GBK 解码后变成
+        乱码，还会把 `rem` 行拆散、和下一行粘起来当命令执行——
+
+            '屾挒涓婂幓鍙細寰楀埌涓€鍙?rem' 不是内部或外部命令
+
+        脚本仍然会往下跑到真正的原因（端口被占），于是屏幕上「乱码命令报错」
+        和「端口错误」混在一起，看起来像是脚本自己坏了。
+        中文说明写在 README/CHANGELOG 里，`.cmd` 只放 ASCII。
+        """
+        candidates = [self.root / "launch-web.cmd", self.root.parent / "launch-web.cmd"]
+        checked = 0
+        for path in candidates:
+            if not path.is_file():
+                continue
+            checked += 1
+            raw = path.read_bytes()
+            offenders = [(index, byte) for index, byte in enumerate(raw) if byte > 127]
+            self.assertEqual(offenders[:5], [], f"{path} 含非 ASCII 字节（cmd.exe 会按 GBK 解码）")
+        self.assertGreater(checked, 0, "没有找到任何 launch-web.cmd")
+
+    def test_port_in_use_names_the_port_and_the_owner(self):
+        """端口被占时必须说清哪条端口、谁占着。
+
+        只说 `try another --port` 等于让用户自己猜。实测最难分辨的情形是上一次
+        启动的窗口还开着：端口在听、页面也能打开，看起来像起成功了。
+        """
+        module = self.root / "launch_web.py"
+        source = module.read_text(encoding="utf-8")
+        self.assertIn("class PortInUse", source)
+        self.assertIn("def port_in_use_message", source)
+        self.assertIn("10048", source)
+        # 探端口要早于「Mode / 密钥 / 请保持窗口打开」那些看起来成功的输出。
+        self.assertLess(source.index("_port_available(args.port)"),
+                        source.index('print("Mode: "'))
+        # 用一条真实被占的端口验证文案本身。
+        import socket
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        probe.listen(1)
+        busy = probe.getsockname()[1]
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_launch_web_probe", module)
+            module_obj = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module_obj)
+            message = module_obj.port_in_use_message(busy)
+            self.assertIn(str(busy), message)
+            self.assertIn("launch-web.cmd --port", message)
+            # 占用者应该是这个测试进程自己：能说出 PID 才算真的查了。
+            self.assertIn("PID", message)
+        finally:
+            probe.close()
+
     def test_run_ps1_agrees_with_the_launcher(self):
         script = (self.root / "run.ps1").read_text(encoding="utf-8")
         self.assertIn("[int]$Port = 8199", script)

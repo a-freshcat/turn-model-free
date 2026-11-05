@@ -1,5 +1,74 @@
 # 版本变更
 
+## v1.2.5 — 2026-11-05
+
+v1.2.4 改端口时在 `.cmd` 里写了中文注释，反而制造了一个新问题。
+
+### `.cmd` 脚本被自己的注释搞坏
+
+报障原文：
+
+```
+'屾挒涓婂幓鍙細寰楀埌涓€鍙?rem' 不是内部或外部命令，也不是可运行的程序
+或批处理文件。
+```
+
+原因是 `cmd.exe` **按系统 OEM 代码页读取批处理文件**，中文 Windows 上是
+936/GBK。v1.2.4 里那些 UTF-8 编码的中文 `rem` 注释，被当成 GBK 解码后变成
+乱码，还会把行拆断、与下一行粘起来当作命令执行。
+
+更麻烦的是脚本**仍然往下跑**，最终照常打印密钥、然后才是真正的失败原因，
+于是屏幕上「乱码命令报错」和「端口错误」混在一起，看起来像脚本本身坏了。
+
+现在两处 `.cmd` 都是**纯 ASCII（0 个非 ASCII 字节）**，中文说明移到本文与
+`gateway/README.md`。测试用「读字节、断言全部 ≤ 127」锁住，而不是断言「文件里
+没有中文」——后者会漏掉全角空格、中文标点之类。
+
+### 端口冲突：说清是哪条端口、谁占着
+
+原来的报错是 `Cannot start the loopback listener (OS error 10048); try another --port.`。
+10048 是 `WSAEADDRINUSE`，但用户从这句话里看不出是什么在占端口。
+
+而且顺序错了：`serve()` 里 bind 失败，意味着**先打印了密钥、再报错**——
+
+```
+Mode: configured upstream accounts
+Gateway API key (...):
+beuIS-c9CPgn2Hiwtp1N9r9yH4nqIHjFaeVZxegfvbg
+Keep this window open. Press Ctrl+C to stop the gateway.
+Cannot start the loopback listener (OS error 10048); try another --port.
+```
+
+前四行看起来像启动成功了。现在改成：
+
+1. **启动前先探端口**（`_port_available`），被占就直接退出，一行「看起来成功」
+   的输出都不会有；
+2. 报错点名端口与占用者：
+
+   ```
+   端口 8199 已被占用，无法启动。占用者：PID 1234（python.exe）。
+   常见原因：上一次启动的网关窗口还在运行，关掉那个窗口再试。
+   或者换一个端口：launch-web.cmd --port 8200
+   ```
+
+3. `PortInUse` 单独一类异常，退出码 1；其余 `OSError`（权限、地址不可用）仍走
+   通用分支，因为「换个端口」对它们不适用。
+
+### 顺带说明
+
+v1.2.4 说是「端口冲突」，其实那次 8199 上占着的是我自己测试时遗留的网关进程。
+端口号本身是对的，问题在于冲突时的提示质量——用户没法从一句 `10048` 判断
+该关掉什么。
+
+### 测试
+
+`LauncherPortTests` 增加 2 项：
+- `test_cmd_files_are_pure_ascii`：两个 `.cmd` 的每个字节都 ≤ 127；
+- `test_port_in_use_names_the_port_and_the_owner`：真的 bind 一个端口，再断言文案
+  里有端口号、有 `PID`、有换端口的命令，且探端口发生在打印 `Mode:` 之前。
+
+源目录 `130 passed, 1 skipped`，`gateway/` 镜像 `131 passed, 0 skipped`。
+
 ## v1.2.4 — 2026-11-05
 
 换掉本机监听地址。默认端口从 **8000** 改为 **8199**。
