@@ -7,7 +7,7 @@ description: Generate images through a user-configured OpenAI Images compatible 
 
 使用本技能自己的 `scripts/generate.py`，从兼容网关生成并保存图片。技能可独立安装，服务可以由用户自建，也可以由获准共享服务的提供方托管；不要求本机安装网关项目。
 
-连接信息来自 `GATEWAY_BASE_URL` 和 `GATEWAY_API_KEY` 环境变量。缺少时，向用户确认其选择的服务地址与配置方式；凭据应在本机环境或客户端凭据管理中填写，避免粘贴到聊天。使用提供方给出的图像模型名，可通过 `GATEWAY_IMAGE_MODEL` 配置。不能把模型自称的 Banana 能力当作已连通接口。
+连接信息来自 `GATEWAY_BASE_URL`、`GATEWAY_API_KEY` 环境变量，或本技能目录中的私有 `config.json`（字段 base_url、api_key、可选 model）。缺少时，向用户确认其选择的服务地址与配置方式；凭据应在本机环境或客户端凭据管理中填写，避免粘贴到聊天。使用提供方给出的图像模型名，可通过 `GATEWAY_IMAGE_MODEL` 配置。不能把模型自称的 Banana 能力当作已连通接口。
 
 将用户的画面需求写入当前任务目录的 UTF-8 提示词文件，再执行：
 

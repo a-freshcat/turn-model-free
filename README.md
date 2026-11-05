@@ -2,16 +2,16 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。通过网页统一管理账号、查看额度、选择模型和测试流式对话。
 
-**当前版本：v1.2.12** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.2.13** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
 
 
 ## 只用技能，接入现成网关
 
-不想部署号池，可在 [v1.2.12 Release](https://github.com/a-freshcat/free-m-clone/releases/tag/v1.2.12) 单独下载 **gateway-imagegen-v1.2.12.zip**。它是独立生图技能，支持 DSH、Codex 等能加载 SKILL.md 并执行 Python 的客户端；无需下载整个项目或安装服务端依赖。
+不想部署号池，可在 [v1.2.13 Release](https://github.com/a-freshcat/free-m-clone/releases/tag/v1.2.13) 单独下载 **gateway-web-search-v1.2.13.zip**（搜索）或 **gateway-imagegen-v1.2.13.zip**（生图）。这些是独立技能，支持 DSH、Codex 等能加载 SKILL.md 并执行 Python 的客户端；无需下载整个项目或安装服务端依赖。
 
 配置服务提供方给出的 **网关地址、调用 Key、图像模型名**，即可使用自建或经授权共享的服务。无需交换 Google 登录态，也无需额外配置 OpenAI/DeepSeek Key。技能不附送账号或配额；共享消耗提供方账号的实际配额。
 
-完整步骤及共享部署边界见 [单独安装技能与共享网关](docs/standalone-skills-and-sharing.md)。本版本独立附件仅包含生图技能，尚无独立网页搜索技能。核心网关 Key 含管理权限，共享前需用反代隔离管理路由并发放独立调用凭据。
+完整步骤及共享部署边界见 [单独安装技能与共享网关](docs/standalone-skills-and-sharing.md)。本版本提供独立搜索技能 **gateway-web-search** 与生图技能 **gateway-imagegen**，分别按需下载。核心网关 Key 含管理权限，共享前需用反代隔离管理路由并发放独立调用凭据。
 
 ## 功能
 
@@ -130,3 +130,5 @@ curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8199/v
 生成超时与生图能力边界见 [说明](docs/generation-timeouts.md)。本版未提供原生生图。
 
 图像生成已支持 `POST /v1/images/generations`，详见 [接入与 curl 示例](docs/image-generation.md)。无需额外 OpenAI/DeepSeek Key；DSH 及其他客户端均可接入。
+
+网页搜索已接入独立 `/v1/search` API，支持 DSH 技能单独安装，详见 [搜索技能安装与旧模式切换](docs/web-search.md)。无需额外 DeepSeek Key。

@@ -207,7 +207,7 @@ class ProtectionMiddleware:
         if getattr(web, 'pool', None) is not getattr(state, 'pool', None):
             guard = None
         if (scope['type'] != 'http' or scope.get('method') != 'POST'
-                or scope.get('path') not in ('/v1/chat/completions', '/ui/chat', '/v1/images/generations') or guard is None):
+                or scope.get('path') not in ('/v1/chat/completions', '/ui/chat', '/v1/images/generations', '/v1/search') or guard is None):
             return await self.app(scope, receive, send)
         try:
             token, event = await guard.admit()

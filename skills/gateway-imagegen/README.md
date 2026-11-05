@@ -4,4 +4,6 @@
 
 可接入自建或经授权共享的 Images 兼容网关；不附送账号/配额，不需要 Google 登录态，也不要求下载服务端项目。
 
-安装与共享说明：https://github.com/a-freshcat/free-m-clone/blob/v1.2.12/docs/standalone-skills-and-sharing.md
+安装与共享说明：https://github.com/a-freshcat/free-m-clone/blob/v1.2.13/docs/standalone-skills-and-sharing.md
+
+也可使用技能目录内的私有 config.json 配置 base_url、api_key 和 model；该文件不应上传或分发。

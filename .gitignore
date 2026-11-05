@@ -27,3 +27,6 @@ commit-msg*.txt
 .release/
 
 .gateway-images/
+
+# Skill connection secrets stay local.
+skills/**/config.json
