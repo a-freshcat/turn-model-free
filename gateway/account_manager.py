@@ -56,6 +56,9 @@ class Lease:
         return self.state.account
 
     async def fail(self, failure: UpstreamFailure) -> None:
+        guard = getattr(self.pool, 'protection', None)
+        if guard is not None and self.account.driver != 'demo':
+            await guard.observe_failure(failure.reason)
         async with self.pool.condition:
             state = self.state
             state.fail_count += 1
@@ -167,6 +170,9 @@ class AccountManager:
                 except (UpstreamFailure, TimeoutError) as exc:
                     await lease.fail(exc if isinstance(exc, UpstreamFailure)
                                      else UpstreamFailure("first_output_timeout"))
+                    guard = getattr(self, 'protection', None)
+                    if guard is not None:
+                        guard.check()
                 else:
                     # 把成功尝试的连接与租约交给响应生命周期。
                     lifetime.push_async_callback(current.pop_all().aclose)

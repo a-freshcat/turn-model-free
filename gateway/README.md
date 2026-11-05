@@ -1,5 +1,7 @@
 # 本机 OpenAI Chat 网关
 
+当前使用入口见[仓库首页](../README.md)。v1.2.7 新增的暂停、限流和 AI 排查提醒见[调用保护说明](docs/protection.md)。
+
 Python 3.10+、FastAPI、Uvicorn、httpx 异步实现。支持离线模拟号池、OpenAI 兼容上游，以及 Antigravity Google OAuth 和原生请求驱动。保留 free-m-clone 原界面风格。
 
 ## 1. 来源与接入范围
@@ -74,7 +76,7 @@ Antigravity 候选项目、稳定性证据及尚未实测的边界见
 也可以直接双击 `launch-web.cmd`：已有 accounts.json 时加载真实配置，否则启动模拟号池，等本机服务就绪后打开
 `http://127.0.0.1:8199/`，显示与本地 free-m-clone 相同的渠道卡、图标、折叠列表和昼夜风格。
 启动器通过一次性入口自动建立管理会话；直接访问地址时，可输入启动窗口显示的网关密钥。
-原件位于 `C:\Users\handsomeboys\Documents\deepseek-harness\repair_question\free-m-clone`，
+原件位于 `原 free-m-clone 源码快照目录`，
 8 个复用文件按原字节保存在 web/vendor/free-m-clone，哈希清单见其 provenance.json。
 
 点击「WorkBuddy 国内版 → 账号」可以看到两个演示账号，其他渠道按各自配置列出；
@@ -110,7 +112,7 @@ launch-web.cmd --real
 新机器通常使用虚拟环境：
 
 ```powershell
-cd C:\Users\handsomeboys\Documents\ChatGPT\plugin_antigravity
+cd path\to\free-m-clone\gateway
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:GATEWAY_API_KEY = "local-development-key"

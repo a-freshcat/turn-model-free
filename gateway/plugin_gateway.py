@@ -22,6 +22,7 @@ import re
 from pathlib import Path
 
 import httpx
+import anyio
 
 DEFAULT_PORT = 8326
 DEFAULT_HOST = "127.0.0.1"
@@ -144,9 +145,14 @@ class PluginGateway:
                                            headers=headers, json=body)
             response = await client.send(request, stream=True)
         except httpx.HTTPError as exc:
-            await client.aclose()
+            with anyio.CancelScope(shield=True):
+                await client.aclose()
             raise PluginGatewayError(
                 f"转发到 DSH 插件网关失败（{type(exc).__name__}）") from None
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await client.aclose()
+            raise
         return _OwnedResponse(response, client)
 
 
@@ -161,7 +167,8 @@ class _OwnedResponse:
         return getattr(self._response, name)
 
     async def aclose(self) -> None:
-        try:
-            await self._response.aclose()
-        finally:
-            await self._client.aclose()
+        with anyio.CancelScope(shield=True):
+            try:
+                await self._response.aclose()
+            finally:
+                await self._client.aclose()

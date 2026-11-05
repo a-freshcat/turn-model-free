@@ -12,3 +12,5 @@ accounts.json
 .gateway-api-key
 # 手工改文件前的备份
 *.bak
+.gateway-protection.json
+.protection-*.tmp

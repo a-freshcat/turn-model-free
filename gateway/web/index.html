@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>白嫖模型接入 · 本机号池</title>
   <link rel="stylesheet" href="/assets/vendor/free-m-clone/dist/demo.css">
-  <link rel="stylesheet" href="/assets/app.css?v=20261105-ui4">
+  <link rel="stylesheet" href="/assets/app.css?v=1.2.7">
 </head>
 <body>
   <div class="demo-shell" id="dashboard-shell">
@@ -14,6 +14,7 @@
       <span class="demo-badge">plugin v2.5.4 · 本机统一 API</span>
       <p id="mode-note">正在连接本机号池…</p>
     </header>
+    <section id="protection-panel" class="protection-panel" role="alert" aria-live="assertive" hidden></section>
     <main><div id="page-root" class="ofm_root"></div></main>
     <aside class="demo-side">
       <section class="control-card">
@@ -77,5 +78,6 @@
   </main>
   <script src="/assets/channel-runtime.js?v=20261105-cap2"></script>
   <script type="module" src="/assets/app.mjs?v=20261105-ui5"></script>
+  <script type="module" src="/assets/protection.mjs?v=1.2.7"></script>
 </body>
 </html>

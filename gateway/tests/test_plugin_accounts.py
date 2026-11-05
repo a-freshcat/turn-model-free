@@ -234,6 +234,8 @@ class MergedViewTests(unittest.IsolatedAsyncioTestCase):
             async def call(inner, method, payload, attempts=5):
                 if method == "account.list":
                     return {"accounts": listed}
+                if method == "credential.presence":
+                    return {"present": {"buddy-orphan1": False, "buddy-orphan2": False}}
                 if method == "account.delete":
                     deleted.append(payload["accountId"])
                     return {"ok": True}
@@ -307,6 +309,34 @@ class MergedViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["id"] for r in rows], ["buddy-named"])
         self.assertFalse(rows[0]["pending"])
         self.assertEqual(deleted, ["buddy-shell"])
+
+    async def test_unknown_credential_state_never_deletes_an_account(self):
+        for result in (None, {}, {"present": {}}, {"present": {"buddy-safe": None}}):
+            deleted = []
+
+            class _Bridge:
+                async def call(inner, method, payload, attempts=5):
+                    if method == "account.list":
+                        return {"accounts": [{"id": "buddy-safe", "nickname": "buddy-safe",
+                                              "credentialRef": "EXISTING_REF"}]}
+                    if method == "credential.presence":
+                        if result is None:
+                            raise BridgeError("credential store unavailable")
+                        return result
+                    if method == "account.delete":
+                        deleted.append(payload["accountId"])
+                        return {"ok": True}
+                    raise AssertionError(method)
+
+                async def aclose(inner):
+                    pass
+
+            self.web.bridge = _Bridge()
+            self.web.bridged = {}
+            rows = await self.web.plugin_accounts("buddy")
+            self.assertEqual(deleted, [], "unknown is not evidence that credentials are absent")
+            self.assertEqual([row["id"] for row in rows], ["buddy-safe"])
+            self.assertTrue(self.web.protection.paused)
 
     async def test_restarted_gateway_reaps_old_placeholders(self):
         """进程重启后，`bridged` 是空的——旧占位必须靠凭据判定被清掉。

@@ -1,4 +1,5 @@
 import { POOLS, poolFor, summarize, deduplicate } from './quota-models.mjs'
+import { mergePluginRuntime } from './quota-data.mjs'
 
 const $ = id => document.getElementById(id)
 let accounts = []
@@ -674,11 +675,7 @@ async function load() {
             name: (row.nickname || '未命名账号').replace(/\s*·\s*冷却.*$/, ''),
             provider: row.provider || 'buddy',
             driver: row.driver || 'openai',
-            status: rt.status || row.status || 'active',
-            in_flight: rt.in_flight ?? row.in_flight ?? 0,
-            max_concurrency: rt.max_concurrency ?? row.max_concurrency ?? 1,
-            fail_count: rt.fail_count ?? row.fail_count ?? 0,
-            cooldown_remaining_seconds: rt.cooldown_remaining_seconds ?? 0,
+            ...mergePluginRuntime(row, rt),
             models: [],
             // 插件的积分包读数。`null` 表示查不到，`balanceError` 说明原因。
             balance: credit?.balance ?? null,

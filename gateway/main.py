@@ -10,6 +10,7 @@ from typing import Literal
 from uuid import uuid4
 
 import anyio
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -26,6 +27,7 @@ from plugin_gateway import PluginGateway, PluginGatewayError
 from upstream_client import PreparedStream, UpstreamClient, encode_event
 from web_api import CHANNELS, WebManager, authorized as web_authorized, failure as web_failure, router as web_router
 from antigravity_auth import OAuthCallbackRedaction
+from protection import ProtectionBlocked, ProtectionMiddleware, SSEProtectionObserver, observe_error_value
 
 ROOT = Path(__file__).resolve().parent
 
@@ -101,6 +103,9 @@ class ChatResponse(Response):
         try:
             try:
                 lease, result = await self.pool.failover(model, attempt, lifetime)
+            except ProtectionBlocked as exc:
+                await exc.response()(scope, receive, send)
+                return
             except InvalidRequest as exc:
                 await error_response(400, str(exc), "invalid_request", "invalid_request_error",
                                      headers=headers)(scope, receive, send)
@@ -169,6 +174,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Local Chat Gateway", lifespan=lifespan)
 app.add_middleware(OAuthCallbackRedaction)
+app.add_middleware(ProtectionMiddleware)
 bearer = HTTPBearer(auto_error=False, scheme_name="GatewayBearer")
 app.include_router(web_router)
 # Windows registry MIME associations can otherwise label .mjs as text/plain.
@@ -211,6 +217,11 @@ async def invalid_request(request: Request, exc: RequestValidationError):
             return unauthorized
     return error_response(400, "The request body does not match the expected schema.",
                           "invalid_request", "invalid_request_error")
+
+
+@app.exception_handler(ProtectionBlocked)
+async def protection_blocked(request: Request, exc: ProtectionBlocked):
+    return exc.response()
 
 
 @app.get("/healthz")
@@ -285,13 +296,18 @@ async def make_chat_response(body: ChatRequest, request: Request):
 async def _plugin_chat(body: ChatRequest, request: Request):
     """把 12 家的对话转发给插件网关，按客户端要求做流式或整体透传。"""
     gateway: PluginGateway = request.app.state.web.plugin
+    guard = request.app.state.web.protection
+    await guard.before_send()
     payload = body.model_dump(mode="json", exclude_none=True)
     try:
         upstream = await gateway.chat(payload, stream=body.stream is True)
     except PluginGatewayError as exc:
+        await guard.observe_failure('plugin_transport')
         return error_response(503, str(exc), "plugin_gateway_unavailable", "api_error")
     if upstream.status_code != 200:
         try:
+            await guard.observe_failure(f'http_{upstream.status_code}')
+            guard.check()
             detail = await upstream.aread()
         finally:
             await upstream.aclose()
@@ -300,15 +316,27 @@ async def _plugin_chat(body: ChatRequest, request: Request):
     if body.stream is not True:
         try:
             content = await upstream.aread()
+            await observe_error_value(guard, content)
+            guard.check()
         finally:
             await upstream.aclose()
         return Response(content=content, status_code=200,
                         media_type=upstream.headers.get("content-type", "application/json"))
 
     async def frames():
+        observer = SSEProtectionObserver(guard)
         try:
             async for chunk in upstream.aiter_bytes():
+                await observer.feed(chunk)
+                guard.check()
                 yield chunk
+        except ProtectionBlocked:
+            yield encode_event(error_body('模型调用已暂停，请在管理页复制诊断信息交给 AI 排查。',
+                                          'dispatch_paused'))
+        except httpx.HTTPError:
+            await guard.observe_failure('plugin_stream_transport')
+            yield encode_event(error_body('上游流连接中断，请查看管理页调用保护状态。',
+                                          'upstream_stream_error'))
         finally:
             await upstream.aclose()
 

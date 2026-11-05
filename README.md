@@ -1,166 +1,114 @@
-# free-m-clone v1.2.2
+# free-m-clone
 
-本版本新增 **本机 OpenAI 兼容 API、Antigravity Google OAuth、账号池与三个配额池看板**，沿用原渠道界面风格。
+本机模型账号管理与 OpenAI 兼容 API 网关。通过网页统一管理账号、查看额度、选择模型和测试流式对话。
 
-v1.2.1 起，13 家渠道的「添加账号」都是**真实厂商登录**：Antigravity 走本网关自己的
-Google OAuth，其余 12 家把登录委托给本机已安装的 `dsh-our-free-model` 插件的
-`channel-pack`（Node 子进程桥），登录页落在各厂商域名。已有兼容上游配置仍可通过
-导入入口添加。
+**当前版本：v1.2.7** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
 
-v1.2.2 起，这 12 家的**账号与模型以插件为准**：插件里已有的账号会直接显示在本页，
-模型清单与对话也由插件自带的 OpenAI 兼容网关提供（`127.0.0.1:8326`）。因此这份
-网关在 12 家渠道上是「插件的前端」，Antigravity 才是它自己的原生实现。
+## 功能
 
-> 12 家需要本机具备 Node 运行时，以及已安装并正在运行的 `dsh-our-free-model` 插件。
-> 插件未运行时网关照常启动，只有这 12 家的账号列表与对话会给出明确原因。
+- **统一 API**：支持 `/v1/models` 和 `/v1/chat/completions`，兼容非流式 JSON 与 SSE 流式输出。
+- **账号管理**：添加、启停、刷新、测试账号，查看可用模型与渠道能力。
+- **Antigravity 原生接入**：Google OAuth 登录、令牌续期、模型目录和配额查询。
+- **插件渠道接入**：通过本机 DSH 插件桥接登录、账号、积分和模型，对话由插件网关转发。
+- **配额看板**：按渠道和账号筛选，展示状态、积分套餐、用量条和重置时间。
+- **本机账号池**：轮询、单号并发限制、冷却和输出前故障切换；插件渠道的调度由插件负责。
 
-新服务位于 [`gateway/`](gateway/README.md)。首次安装：
+## 环境要求
+
+- Python **3.10+**。
+- 使用 DSH 插件渠道时，需要 **Node.js 22+**、已安装的 `dsh-our-free-model` 插件，以及正在运行的插件 OpenAI 网关。
+- 仅使用 Antigravity 或导入 OpenAI 兼容上游时，无需启用插件渠道。
+
+## 安装与启动
+
+下载并解压 [Release](https://github.com/a-freshcat/free-m-clone/releases/latest)，或克隆仓库：
 
 ```powershell
+git clone https://github.com/a-freshcat/free-m-clone.git
+cd free-m-clone
 python -m venv gateway/.venv
 gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
 .\launch-web.cmd
 ```
 
-双击根目录 `launch-web.cmd` 启动并打开网页；从渠道页进入「配额看板 · 三个池」。
-发布包不含账号、登录令牌、依赖或个人页面截图；默认可用离线演示号池启动。
-详见 [网关使用说明](gateway/README.md) 和 [版本变更](CHANGELOG.md)。
+首次安装依赖后，后续直接双击根目录 **`launch-web.cmd`**。启动器会打开管理页：
 
-原演示页、腾讯防护层与测试保留在原目录。下文为原项目说明。
+**http://127.0.0.1:8199/**
 
-本次发布验证：网关 52 项 Python 测试、配额分组及 HTTP/SSE 测试通过。原项目回归为 78/79；唯一失败项为本机已安装插件升级后与旧来源快照哈希不一致，详见 CHANGELOG。
+保持启动窗口开启，按 `Ctrl+C` 停止。更换端口或仅启动服务：
 
----
-
-# free-m-clone · 白嫖模型接入（抄写版 + 腾讯 11128 防护）
-
-`dsh-our-free-model` 插件里「白嫖模型接入」页面的独立抄写版，**并把该插件的腾讯渠道防护层
-一并移植进来、接成可运行的请求管道**。
-
-- 页面来源：`~/.dsh/profiles/desktop/node_modules/dsh-our-free-model/client.js` v2.5.4，第 4165–4861 行（逐字节）
-- 防护来源：`pack.js` v2.5.4（install sha256 `9b6d430a…`），基线在 `vendor/upstream/`
-- 测试：**79 / 79 通过**（防护层 19 + 原生 Response 6 + 防漂移 12 + 渲染树对比 7 + 行为 21 + 交付物 9 + 防护演示 5）
-- 演示：双击 `dist/index.html`，不需要服务器、不需要联网
-- 依赖：`npm ci` 一条命令装回（`package-lock.json` 锁版本 + 校验和，实测字节完全一致）
-
-完整报告见 [REPORT.md](REPORT.md)。
-
-## 克隆下来怎么跑
-
-```bash
-git clone https://github.com/a-freshcat/free-m-clone.git
-cd free-m-clone
-node scripts/test-all.mjs     # 首次会自动 npm ci 装依赖，然后跑 79 条测试
+```cmd
+launch-web.cmd --port 8200
+launch-web.cmd --no-browser
 ```
 
-仓库**不包含** `node_modules`（那是第三方代码，不该塞进私有仓库）。
-`node scripts/test-all.mjs` 会检测到缺依赖并自动 `npm ci`；也可以手动先装。
+默认加载 `gateway/accounts.json`；尚未配置真实账号时使用演示号池。演示号池不会调用真实模型。
 
+## 添加账号与模型
 
-## 30 秒上手
+**Antigravity**：在渠道卡片点击添加，打开 Google 授权页并完成登录。账号模型以实际返回的目录为准；如果目录暂时查询失败，可在登录成功后刷新。首次尚无项目的账号需先在官方客户端完成初始化。
 
-```bash
-# 1) 看页面 + 防护实验台（不用装任何东西）
-start dist/index.html
+**DSH 插件渠道**：先运行 DSH 并启用插件网关。页面通过插件管理账号与积分，对话默认转发到 `127.0.0.1:8326`；该端口与本项目管理页的 `8199` 独立。
 
-# 2) 两处来源有没有漂移
-node scripts/extract.mjs --check        # 页面 vs 已安装插件
-node scripts/extract-theme.mjs --check  # 设计令牌 vs app.asar
-node scripts/merge-guard.mjs --check    # 防护层 vs pack.js 里的抽取件
+**已有兼容上游**：使用导入入口，按 [accounts.example.json](gateway/accounts.example.json) 配置接口地址、凭据和模型映射。
 
-# 3) 跑全部测试
-node scripts/test-all.mjs
+模型能力、签到和积分领取以渠道实际支持情况为准。连接本机管理页与完成厂商登录是独立状态。
+
+## 三个配额池
+
+Antigravity 的额度按账号分为三个池：
+
+| 配额池 | 包含型号 |
+| --- | --- |
+| Gemini 4 Argon | Argon 各档型号 |
+| Claude / GPT | Claude 与 GPT 共用 |
+| 其他 Gemini / 内部型号 | 其余 Gemini 和内部型号共用 |
+
+三个池分别显示用量条和百分比，型号明细可折叠。不跨池相加或平均；池内返回值不一致时，以最低已知剩余量汇总并显示范围。
+
+其他渠道按各自的积分套餐展示，支持查看剩余量、总量和有效期。
+
+## 接入客户端
+
+| 配置项 | 值 |
+| --- | --- |
+| Base URL | `http://127.0.0.1:8199/v1` |
+| API Key | 启动窗口显示的网关密钥 |
+| Model | 从模型列表或 `GET /v1/models` 读取 |
+
+密钥默认保存在 `gateway/.gateway-api-key`，重启后继续使用；也可通过 `GATEWAY_API_KEY` 指定。API 调试页：**http://127.0.0.1:8199/docs**。
+
+在仓库根目录用 PowerShell 测试演示号池：
+
+```powershell
+$env:GATEWAY_API_KEY = "<启动窗口显示的密钥>"
+curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8199/v1/chat/completions -H "Authorization: Bearer $env:GATEWAY_API_KEY" -H "Content-Type: application/json" --data-binary "@gateway/examples/stream.json"
 ```
 
-## 两部分内容
+真实账号请将请求中的 `model` 替换为实际模型 ID。已开始输出的流式请求发生错误后不会重播答案。
 
-### 1. 抄来的页面（前端）
+## 数据与配置
 
-| 路径 | 作用 |
-|---|---|
-| `src/extracted/channels-page.js` | 页面全部代码，**原文**（13 渠道 / 图标 / 登录轮询 / 余额 / 模型开关） |
-| `src/extracted/channels.css` | 162 条规则 + 10 组动画，按原文格式 |
-| `src/extracted/channels-dict.js` | 70 条 `chan.*` 中文 + 70 条英文 |
-| `src/extracted/theme-tokens.css` | 从桌面端 `app.asar` 取出的 627 个设计令牌 |
+### 异常保护与 AI 排查提醒
 
-### 2. 移植的防护层（后端）
+默认最多 **2 个对话并发、每分钟 20 次本服务的模型调度**，每次本机换号尝试也计数。
+上游返回 401/403/429、11128 或明确账号限制时暂停后续调用；一分钟内累计 3 次其他上游故障也会暂停。
+该暂停会阻止继续换号重试，并尽可能取消本服务正在转发的其他请求。
 
-| 路径 | 作用 |
-|---|---|
-| `src/guard/tencent-gate.js` | 防护层本体：10 条规则、三档语义、路径遮罩、WeakSet 登记、取证埋点。**函数体逐字节来自 pack.js** |
-| `src/guard/pipeline.mjs` | 接进真实请求路径：构建消息 → 发送 → 400/11128 → 升档 → 从原始输入重建 → 重发（预算 2 次） |
-| `src/guard/provenance.json` | 源的 sha256、规则数、以及"只动了哪一处"的记录 |
-| `src/demo/guard-lab.mjs` | 演示页里的防护实验台：可改提示词、切上游严格程度、看每次实际发出的字节 |
+页面会显示异常原因、发生时间及「复制诊断给 AI」。诊断仅含固定错误分类、HTTP 状态、时间和调用上限，
+不会自动发给 AI，也不会复制账号、对话、Cookie 或令牌。暂停状态跨重启保留，检查原因后点「检查后恢复」。
+恢复不会解除上游限制，也不会自动启用已停用账号。
 
-### 支撑
+可通过 `GATEWAY_MAX_ACTIVE_CHATS` 和 `GATEWAY_MAX_DISPATCH_PER_MINUTE` 调低上限。
+保护仅覆盖经过本服务的模型调用；插件内部的重试和绕过本服务的直接请求无法由这里中断。
+上游识别过程不可见，本服务无法保证在平台识别前预知或避免账号限制。
 
-| 路径 | 作用 |
-|---|---|
-| `src/mock/pack.mjs` | 假渠道包：13 家渠道的 RPC 语义与数据形状 |
-| `src/runtime/mini-dom.mjs` | 无浏览器时可用的迷你 DOM |
-| `src/test/` | 七套测试 + 迷你运行器 |
-| `dist/` | 构建产物：`index.html` + `demo.js` + `demo.css` |
-| `scripts/` | `extract` / `extract-theme` / `merge-guard` / `build-demo` / `test-all` |
-| `vendor/upstream/` | 防护层基线（从 pack.js 抽取的源），让本仓库能独立复核防护层有没有被改 |
-| `package-lock.json` | 依赖版本 + integrity 校验和，`npm ci` 据此还原 |
+账号配置和登录凭据保存在本机，不包含在源码或发布包中。Antigravity 凭据在 Windows 上使用当前用户 DPAPI 加密，插件渠道继续使用插件自己的凭据库。
 
-## 命令
+默认只监听 `127.0.0.1`。当前账号池状态保存在单个进程内，使用一个 worker；多主机部署应分配独立账号池。
 
-| 命令 | 说明 |
-|---|---|
-| `npm test` | 构建 + 跑全部 79 条测试 |
-| `npm run check:drift` | 三处来源是否都没漂移（不一致退出码 1） |
-| `npm run verify` | 构建 + 防漂移 + 全部测试 |
-| `npm run extract` | 插件升级后重新抄页面 + 主题令牌 |
-| `npm run extract:guard` | 插件升级后重新移植防护层（读 `vendor/upstream/` 基线） |
-| `npm run demo` | 重新构建演示页 |
-| `npm run test:guard` | 只跑防护层测试 |
-| `npm run test:parity` | 只跑渲染树对比 |
-| `npm run test:behaviour` | 只跑行为测试 |
+详细配置见 [网关说明](gateway/README.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。需要离线查看界面和防护实验台，可直接打开 `dist/index.html`。
 
-## 演示页用法
+## 借鉴
 
-双击 `dist/index.html`。页面分两半：
-
-**上半 · 防护实验台**（移植过来的后端行为）
-
-- 改 system 提示词（默认样例含四个实测指纹 + 一个必须保留的路径）
-- 切假上游严格程度：只查字面量 / 还查零宽（要 L2）/ 还查全角（要 L3）/ 永远拒绝
-- 「发一次请求」跑完整流程：升档几次、每次实际发出的字节、路径有没有被破坏、埋点长什么样
-- 「只看三档清洗效果」并排比较 L1/L2/L3
-
-**下半 · 渠道卡**（抄来的插件页面）
-
-- 7 个场景 / 中英 / 深浅色 / 每次 RPC 明细
-- 深链：`dist/index.html#scenario=fresh&lang=en&theme=dark&open=both`
-
-## 硬约束（改防护层前必读）
-
-这几条是原插件用真实故障换来的，移植版同样遵守，并且有测试盯着：
-
-1. **不写不可见字符去绕过** —— 零宽塞进 Windows 路径会让工具调用直接失败
-2. **不改用户内容** —— 只处理 `system` / `assistant`；`user` 与 `tool` 逐字节保留
-3. **干净文本逐字节不变** —— 否则丢 `prompt_cache_key` 前缀缓存
-4. **路径逐字节保留** —— `C:\...\DeepSeek Harness\app.js` 里的品牌词不是指纹
-5. **升档有界** —— 默认 2 次，整请求共享一份预算
-6. **已经吐过内容就不再重发**
-
-## 它不是什么
-
-不是能登录真实渠道的插件。登录、领取、余额来自 `src/mock/pack.mjs`；防护层只做本地内容处理，
-不联网、不读凭据、不代你调上游。真机接入仍只有原插件能做（`vendor/channel-pack/pack.js`）。
-
-## 依赖
-
-`react` / `react-dom` / `scheduler` 19.2.3，由 `package-lock.json` 锁定（含 integrity 校验和）。
-
-```bash
-npm ci     # 严格按 lock 还原；实测 85 个文件哈希与最初那份完全一致，约 2 秒
-```
-
-早先这台机器 curl 测 registry 返回 exit 35，我据此以为必须把 `node_modules` 提交进仓库；
-后来用 PowerShell 复测发现 registry 是通的（curl 那次是 TLS 问题，不是断网），
-于是改成标准做法：**仓库不存依赖，靠 lock 文件还原**。
-
-只想要演示页的话，单拷 `dist/` 即可 —— 它自包含，不需要任何依赖。
-
+界面与腾讯 11128 防护层借鉴 `dsh-our-free-model`；Antigravity 协议实现参考 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)。感谢相关项目，来源与许可说明见 [NOTICE](gateway/NOTICE.md)。

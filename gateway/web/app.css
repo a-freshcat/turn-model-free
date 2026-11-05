@@ -111,3 +111,9 @@ a.ofm_creditbadge { text-decoration: none; cursor: pointer; }
   .demo-shell { padding: 14px 10px 36px; gap: 16px; }
   .connect-shell { margin: 20px auto; padding: 0 12px 24px; }
 }
+.protection-panel { padding:14px; border:1px solid var(--dsw-alias-border-l2); border-radius:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
+.protection-panel[hidden] { display:none; }
+.protection-panel.protection-paused { border-color:var(--dsw-alias-state-error-primary,#d44545); }
+.demo-shell > .protection-panel { grid-column:1 / -1; }
+.protection-message { flex:1 1 280px; font-size:12px; line-height:1.7; }
+.protection-floating { position:sticky; bottom:12px; max-width:1200px; margin:12px auto; z-index:10; }

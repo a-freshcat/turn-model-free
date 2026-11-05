@@ -184,6 +184,9 @@ def encode_event(value: JSON) -> bytes:
 
 
 def _completion(value: JSON | None, model: str, *, stream: bool) -> JSON:
+    if value and any(isinstance(item, dict) and item.get('code') in (11140, '11140')
+                     for item in (value, value.get('error'), value.get('data'))):
+        raise UpstreamFailure('account_restricted', reauth=True)
     if _is_gate(value):
         raise UpstreamFailure("channel_11128")
     if value is None or value.get("error") is not None:
@@ -282,6 +285,9 @@ class UpstreamClient:
         model: str, options: JSON, lifetime: AsyncExitStack,
     ) -> JSON | PreparedStream:
         """驱动入口。异构渠道可在这里按 driver 分派并归一成 JSON / PreparedStream。"""
+        guard = getattr(self, 'protection', None)
+        if guard is not None:
+            await guard.before_send()
         await _apply_jitter(account)
         if account.driver == "antigravity":
             from antigravity_driver import send_native

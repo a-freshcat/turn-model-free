@@ -25,6 +25,7 @@ from bridge_client import BridgeError, PackBridge
 from config import Settings
 from antigravity_auth import AntigravityAuth, OAuthFailure, model_pool
 from plugin_gateway import PluginGateway, PluginGatewayError
+from protection import DispatchProtection
 
 router = APIRouter()
 CHANNELS = ("codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
@@ -273,6 +274,8 @@ class WebManager:
         self.lock = anyio.Lock()
         self.bootstrap = os.environ.pop("GATEWAY_UI_BOOTSTRAP", "")
         self.ag = AntigravityAuth(path.parent / ".gateway-auth")
+        self.protection = DispatchProtection(path.parent / '.gateway-protection.json')
+        self.upstream.protection = self.pool.protection = self.protection
         self.upstream.antigravity = self.ag
         # 12 家渠道的登录委托给插件的 channel-pack（Node 子进程）。
         # 桥是惰性启动的：只用 antigravity 的用户不必为它付进程开销。
@@ -528,8 +531,7 @@ class WebManager:
         placeholders = [entry["id"] for entry in entries
                         if (entry.get("nickname") or entry["id"]) == entry["id"]]
         # `present[id]` 三态：True 有凭据、False 确定没有、缺失则是「问不到」。
-        # 问不到时退回旧判据（本次会话在等的那些），不再一律当成占位——那会把
-        # 真账号也藏掉。
+        # 问不到时保留账号并暂停模型调用，未知不能作为清理凭据的证据。
         present: dict[str, bool] = {}
         if placeholders:
             try:
@@ -537,8 +539,10 @@ class WebManager:
                     "provider": provider, "accountIds": placeholders})
                 present = {k: v for k, v in (answer or {}).get("present", {}).items()
                            if isinstance(v, bool)}
-            except Exception:  # noqa: BLE001 - 可选增强，任何失败都退回旧判据
+            except Exception:  # noqa: BLE001 - failure must remain unknown, never absent
                 present = {}
+            if any(account_id not in present for account_id in placeholders):
+                await self.protection.pause('credential_store_unavailable')
         now_ms = int(time.time() * 1000)
         out, stale = [], []
         for entry in entries:
@@ -549,7 +553,7 @@ class WebManager:
             candidate = nickname == account_id
             has_credential = present.get(account_id)
             pending = candidate and has_credential is not True and account_id in self.bridged
-            if candidate and has_credential is not True and not pending:
+            if candidate and has_credential is False and not pending:
                 stale.append(account_id)
                 continue
             enabled = entry.get("enabled") is not False
@@ -904,6 +908,7 @@ class WebManager:
                 if provider_of_account is None:
                     raise ValueError("账号不存在")
                 try:
+                    await self.protection.before_send()
                     value = await self.bridge.call(
                         "account.test", {"accountId": account_id}, attempts=1)
                 except BridgeError as exc:
@@ -920,10 +925,15 @@ class WebManager:
                     usable = sum(1 for row in siblings
                                  if row.get("enabled") is not False
                                  and not live_rate_limits(row, now_ms))
-                    return explain_plugin_probe_failure(
+                    explained = explain_plugin_probe_failure(
                         value, account_id=account_id, provider=provider_of_account,
                         nickname=str(value.get("nickname") or ""),
                         total=len(siblings) + 1, usable=usable + 1)
+                    reason = {'account-restricted':'account_restricted',
+                              'channel-verification':'channel_11128',
+                              'credential-expired':'http_401'}.get(explained.get('code'))
+                    await self.protection.observe_failure(reason or 'plugin_probe_failed')
+                    return explained
                 return value
             aliases = [m for m in target["models"] if m not in target["disabled_models"]]
             if not aliases:
@@ -996,6 +1006,28 @@ async def state(request: Request):
                          "accounts": snapshot,
                          "models": request.app.state.pool.models, "model_details": model_details},
                         headers={"Cache-Control": "no-store"})
+
+
+@router.get('/ui/protection')
+async def protection_status(request: Request):
+    if not authorized(request):
+        return failure('请先连接本机网关', 401)
+    return JSONResponse(await request.app.state.web.protection.snapshot(),
+                        headers={'Cache-Control':'no-store'})
+
+
+@router.post('/ui/protection')
+async def protection_action(body: RPCInput, request: Request):
+    if not authorized(request) or not same_origin(request):
+        return failure('请从已连接的本机管理页操作', 403)
+    guard = request.app.state.web.protection
+    if body.method == 'protection.pause':
+        await guard.pause()
+    elif body.method == 'protection.resume' and body.payload.get('acknowledge') is True:
+        await guard.resume()
+    else:
+        return failure('恢复前请确认已检查异常原因')
+    return JSONResponse(await guard.snapshot(), headers={'Cache-Control':'no-store'})
 
 
 @router.get("/ui/quota")

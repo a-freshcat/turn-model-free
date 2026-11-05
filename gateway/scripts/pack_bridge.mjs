@@ -140,6 +140,9 @@ let endpoint = null
 let seq = 0
 
 async function load() {
+  if (credentialsReady === 'unavailable' || credentialsReady.startsWith('memory-fallback:')) {
+    throw new Error('Persistent credential store is unavailable; bridge startup stopped to protect existing accounts')
+  }
   const mod = await import(pathToFileURL(PACK).href)
   await mod.apply(ctx, {})
   endpoint = registered.find(r => r.path === '/api/channel-pack')
@@ -191,6 +194,10 @@ const handlers = {
   // 判据取**凭据是否存在**：占位记录没有凭据，真账号有。这比「本次会话记不
   // 记得这个 id」可靠得多，后者会在进程重启后把旧占位当成新的。
   async 'credential.presence'(payload) {
+    // An unavailable persistent store is unknown, not proof of missing tokens.
+    if (credentialsReady === 'unavailable' || credentialsReady.startsWith('memory-fallback:')) {
+      throw new Error('Persistent credential store is unavailable; account cleanup is suspended')
+    }
     const ids = Array.isArray(payload?.accountIds) ? payload.accountIds : []
     const provider = payload?.provider
     const listed = await rpc('account.list', { provider: PACK_PROVIDER(provider ?? '') })
@@ -205,6 +212,9 @@ const handlers = {
     return { present }
   },
   async 'account.create'(payload) {
+    if (credentialsReady === 'unavailable' || credentialsReady.startsWith('memory-fallback:')) {
+      throw new Error('Persistent credential store is unavailable; repair it before adding accounts')
+    }
     const provider = payload?.provider
     if (typeof provider !== 'string' || !CHANNELS.includes(provider)) {
       throw new Error('未知渠道')
@@ -216,6 +226,9 @@ const handlers = {
     return value
   },
   async 'login.poll'(payload) {
+    if (credentialsReady === 'unavailable' || credentialsReady.startsWith('memory-fallback:')) {
+      throw new Error('Persistent credential store is unavailable; login cannot be saved safely')
+    }
     const value = await rpc('login.poll', {
       accountId: payload?.accountId,
       provider: PACK_PROVIDER(payload?.provider ?? ''),
