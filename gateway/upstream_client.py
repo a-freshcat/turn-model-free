@@ -92,6 +92,29 @@ def _retry_after(header: str | None) -> float:
     return max(0, min(86400, seconds)) if math.isfinite(seconds) else 0
 
 
+def _proxy_for(account: Account) -> str | None:
+    """该账号的出站代理：账号级优先，其次全局环境变量，都没有则直连。
+
+    账号级代理存在的意义是「一个凭据恒定一个出口」。同一凭据在多个 IP 之间
+    漂移，比长期共用一条出口更容易被判定为多开，所以这里不做任何轮换。
+    """
+    return account.proxy or (os.environ.get("GATEWAY_UPSTREAM_PROXY") or None)
+
+
+async def _apply_jitter(account: Account) -> None:
+    """在真正发出上游请求前插入一点随机延迟（人工操作的间隔从不整齐）。
+
+    ⚠️ 只用于**请求上游**，绝不要用在登录轮询（`login.poll`）上：
+    那里的时间点是协议的一部分，抖动会让授权窗口错过回调。
+    """
+    span = account.jitter_ms
+    if span <= 0:
+        return
+    import asyncio
+    import random
+    await asyncio.sleep(random.uniform(0, span / 1000))
+
+
 async def _body(response: httpx.Response, limit: int, *, prefix: bool = False) -> bytes:
     body = bytearray()
     async for chunk in response.aiter_bytes():
@@ -247,7 +270,7 @@ class UpstreamClient:
         if account.id not in self.clients:
             self.clients[account.id] = httpx.AsyncClient(
                 transport=self.transport_factory(account), follow_redirects=False, trust_env=False,
-                proxy=(os.environ.get("GATEWAY_UPSTREAM_PROXY") or None) if account.driver == "antigravity" else None,
+                proxy=_proxy_for(account),
                 timeout=httpx.Timeout(60, connect=5, pool=2, write=15),
                 limits=httpx.Limits(max_connections=account.max_concurrency,
                                     max_keepalive_connections=account.max_concurrency),
@@ -259,6 +282,7 @@ class UpstreamClient:
         model: str, options: JSON, lifetime: AsyncExitStack,
     ) -> JSON | PreparedStream:
         """驱动入口。异构渠道可在这里按 driver 分派并归一成 JSON / PreparedStream。"""
+        await _apply_jitter(account)
         if account.driver == "antigravity":
             from antigravity_driver import send_native
             if self.antigravity is None:

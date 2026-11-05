@@ -1,6 +1,14 @@
-# free-m-clone v1.2.0
+# free-m-clone v1.2.1
 
 本版本新增 **本机 OpenAI 兼容 API、Antigravity Google OAuth、账号池与三个配额池看板**，沿用原渠道界面风格。
+
+v1.2.1 起，13 家渠道的「添加账号」都是**真实厂商登录**：Antigravity 走本网关自己的
+Google OAuth，其余 12 家把登录委托给本机已安装的 `dsh-our-free-model` 插件的
+`channel-pack`（Node 子进程桥），登录页落在各厂商域名。已有兼容上游配置仍可通过
+导入入口添加。
+
+> 12 家登录桥需要本机具备 Node 运行时，以及已安装的 `dsh-our-free-model` 插件；
+> 缺失时网关照常启动，只有这 12 家的「添加账号」会给出明确错误。
 
 新服务位于 [`gateway/`](gateway/README.md)。首次安装：
 

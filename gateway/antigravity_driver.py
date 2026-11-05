@@ -181,10 +181,13 @@ async def send_native(auth, client, account, messages, stream, *, model, options
     from upstream_client import (PreparedStream, MAX_EVENT, MAX_JSON, _body, _events,
                                  _json_object, _retry_after, encode_event)
     wire = native_request(messages, options)
+    # 令牌刷新、项目探测、模型目录查询必须和对话请求走同一条出口：
+    # 同一份 OAuth 凭据在两个 IP 上出现，正是「一个账号多处使用」的特征。
+    proxy = auth.resolve_proxy(account.proxy)
     try:
-        credential = await auth.credential(account.credential_id)
+        credential = await auth.credential(account.credential_id, proxy=proxy)
         if not credential.get("project_id"):
-            credential = await auth.refresh_catalog(account.credential_id)
+            credential = await auth.refresh_catalog(account.credential_id, proxy=proxy)
     except OAuthFailure as exc:
         raise UpstreamFailure("antigravity_authorization", reauth=exc.reauth) from None
     session_seed = next((m.get("content") for m in messages
@@ -207,7 +210,7 @@ async def send_native(auth, client, account, messages, stream, *, model, options
                 break
             await response.aclose()
             try:
-                credential = await auth.credential(account.credential_id, force=True)
+                credential = await auth.credential(account.credential_id, force=True, proxy=proxy)
             except OAuthFailure as exc:
                 raise UpstreamFailure("antigravity_authorization", reauth=exc.reauth) from None
         if not response.is_success:

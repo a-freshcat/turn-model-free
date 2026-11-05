@@ -22,3 +22,6 @@ commit-msg*.txt
 
 # 工作区归属标记（属于 DSH 工作区协作，不属于这个仓库）
 .session-id
+
+# 发布暂存与打包含临时产物（由 .release/prepare_release.py 生成，不入库）
+.release/

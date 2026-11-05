@@ -312,9 +312,16 @@ function createChannelsPage(env) {
       const balanceGeneration = useRef(0)
       const claimPending = useRef(false)
       const creditCapability = CHANNEL_CREDITS[channel.id]
+      // 网关实际实现的能力优先于插件的静态表：表里有、这边没做的东西，
+      // 按钮渲染出来只会点成一句「操作失败」。缺失时回落到静态表。
+      const declared = status?.capabilities
+      const can = key => declared === undefined ? CHANNEL_CREDITS[channel.id]?.[key] === true
+        : declared[key] === true
       const [zcodeProvider, setZcodeProvider] = useState(() => {
         try { return window.localStorage?.getItem(ZCODE_PROVIDER_KEY) === 'zai' ? 'zai' : 'bigmodel' } catch { return 'bigmodel' }
       })
+      // 只有导入窗口的 loginUrl 带 `?request=`；厂商登录页不带。
+      const importing = typeof login?.url === 'string' && login.url.includes('/connect?request=')
       const loginAttempt = useRef(null)
       const chooseZcodeProvider = value => {
         if (value !== 'bigmodel' && value !== 'zai') return
@@ -346,14 +353,16 @@ function createChannelsPage(env) {
         } catch (error) { setModels([]); onError(channel, error) }
       }, [rpc, channel.id, onError])
       const loadCredits = useCallback(async () => {
-        if (!CHANNEL_CREDITS[channel.id]?.status) return
+        if (status?.capabilities ? status.capabilities.creditStatus !== true : !CHANNEL_CREDITS[channel.id]?.status) return
         try {
           const value = await rpc('credits.status', { provider: channel.id })
           setCredits(value?.accounts ?? [])
         } catch { setCredits([]) }
-      }, [rpc, channel.id])
+      }, [rpc, channel.id, status])
       const loadBalances = useCallback((afterWrite = false) => {
-        if (!CHANNEL_CREDITS[channel.id] || !rpc) return Promise.resolve()
+        const enabled = status?.capabilities
+          ? status.capabilities.balances === true : Boolean(CHANNEL_CREDITS[channel.id])
+        if (!enabled || !rpc) return Promise.resolve()
         const pending = balancePending.current
         if (!afterWrite && pending?.provider === channel.id && pending.rpc === rpc) return pending.promise
         const generation = ++balanceGeneration.current
@@ -375,7 +384,7 @@ function createChannelsPage(env) {
           }
         })()
         return request.promise
-      }, [rpc, channel.id])
+      }, [rpc, channel.id, status])
       useEffect(() => {
         setBalances(undefined); setBalanceError('')
         void loadBalances()
@@ -385,10 +394,12 @@ function createChannelsPage(env) {
       // balances move whenever a model is used elsewhere, and a stale credit
       // count reads as "I have more quota than I do".
       useEffect(() => {
-        if (!CHANNEL_CREDITS[channel.id]) return undefined
+        const enabled = status?.capabilities
+          ? status.capabilities.balances === true : Boolean(CHANNEL_CREDITS[channel.id])
+        if (!enabled) return undefined
         const timer = setInterval(() => { void loadBalances() }, 90_000)
         return () => clearInterval(timer)
-      }, [channel.id, loadBalances])
+      }, [channel.id, loadBalances, status])
       const balanceOf = accountId => {
         const row = (balances ?? []).find(entry => entry.accountId === accountId)
         return row?.balance === null || row?.balance === undefined ? null : row.balance
@@ -593,7 +604,7 @@ function createChannelsPage(env) {
         h('div', { className: 'ofm_chanmeta' },
           h('span', null, `${t('chan.meta.accounts')} `, h('b', null, `${enabledCount}/${accountsCount}`)),
           h('span', null, `${t('chan.meta.models')} `, h('b', null, modelsTotal === 0 ? '—' : `${modelsTotal - modelsOff}/${modelsTotal}`)),
-          creditCapability ? h('span', { className: 'ofm_credittotal' },
+          can('balances') ? h('span', { className: 'ofm_credittotal' },
             `${balanceLabel} `,
             h('b', null, balanceLoading ? '…' : balancesKnown
               ? creditCapability.quota ? t('chan.credits.loaded').replace('{count}', String((balances ?? []).filter(row => Number.isFinite(row.balance?.total)).length)) : kilo(balancesTotal)
@@ -620,11 +631,11 @@ function createChannelsPage(env) {
               onChanged(); await loadAccounts(); void loadBalances(true)
             }),
           }, busy === 'refreshAll' ? '…' : t('chan.act.refresh')) : null,
-          creditCapability ? h('button', {
+          can('balances') ? h('button', {
             type: 'button', className: 'ofm_btn ghost', disabled: balanceLoading || busy !== '' || !rpc,
             'aria-busy': balanceLoading ? 'true' : undefined, onClick: () => void loadBalances(true),
           }, balanceLoading ? t('chan.credits.loading') : t('chan.credits.refresh')) : null,
-          creditCapability?.claim ? h('button', {
+          can('claim') ? h('button', {
             type: 'button', className: 'ofm_btn ghost', disabled: busy !== '' || !rpc, 'aria-busy': busy === 'claim' ? 'true' : undefined,
             onClick: claim,
           }, busy === 'claim' ? '…' : t('chan.act.claim')) : null,
@@ -635,7 +646,9 @@ function createChannelsPage(env) {
             h('svg', { viewBox: '0 0 12 12', 'aria-hidden': 'true' }, h('path', { d: 'M3 1.5l6 4.5-6 4.5z' })),
             t('chan.fold.models'), models === undefined ? null : ` (${models.length})`)),
         notice !== '' ? h('p', { className: 'ofm_note' }, notice) : null,
-        balanceError !== '' ? h('p', { className: 'ofm_balanceerror', role: 'alert' },
+        accountsCount > 0 && !can('balances') ? h('p', { className: 'ofm_note', 'data-gateway': 'no-balance' },
+          t('chan.balance.absent')) : null,
+        !can('balances') ? null : balanceError !== '' ? h('p', { className: 'ofm_balanceerror', role: 'alert' },
           t('chan.credits.failed').replace('{reason}', balanceError))
           : balanceFailures > 0 ? h('p', { className: 'ofm_balanceerror', role: 'status' },
             t('chan.credits.partial').replace('{count}', String(balanceFailures))) : null,
@@ -653,7 +666,7 @@ function createChannelsPage(env) {
                     t('chan.credit.today').replace('{credit}', String(credit.todayCredit))) : null,
                   (() => {
                     const balance = balanceOf(row.id)
-                    if (!creditCapability) return null
+                    if (!can('balances')) return null
                     if (balanceLoading) return h('span', { className: 'ofm_note' }, t('chan.credits.loading'))
                     const result = (balances ?? []).find(entry => entry.accountId === row.id)
                     if (balance === null || !Number.isFinite(balance.total)) return h('span', { className: 'ofm_balanceerror' },
@@ -733,15 +746,15 @@ h('div', { className: 'ofm_modellist' }, models.filter(model => channel.id !== '
                 }, model.dead === true ? t('chan.model.restore') : model.disabled === true ? t('chan.model.on') : t('chan.model.off'))))))) : null)
 
       const modal = login === null ? null : h('div', { className: 'ofm_scrim' },
-        h('div', { className: 'ofm_modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': (channel.id === 'antigravity' ? t('chan.oauth.title') : t('chan.login.title')).replace('{name}', channel.name) },
-          h('div', { className: 'ofm_modalhead' }, (channel.id === 'antigravity' ? t('chan.oauth.title') : t('chan.login.title')).replace('{name}', channel.name)),
+        h('div', { className: 'ofm_modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': (channel.id === 'antigravity' ? t('chan.oauth.title') : importing ? t('chan.import.title') : t('chan.login.title')).replace('{name}', channel.name) },
+          h('div', { className: 'ofm_modalhead' }, (channel.id === 'antigravity' ? t('chan.oauth.title') : importing ? t('chan.import.title') : t('chan.login.title')).replace('{name}', channel.name)),
           h('div', { className: 'ofm_modalbody ofm_loginbody' },
-            h('div', { className: 'ofm_loginstep' }, h('b', null, '1'), h('span', null, (channel.id === 'antigravity' ? t('chan.oauth.step1') : t('chan.login.step1')))),
-            h('div', { className: 'ofm_loginstep' }, h('b', null, '2'), h('span', null, (channel.id === 'antigravity' ? t('chan.oauth.step2') : t('chan.login.step2')))),
+            h('div', { className: 'ofm_loginstep' }, h('b', null, '1'), h('span', null, (channel.id === 'antigravity' ? t('chan.oauth.step1') : importing ? t('chan.import.step1') : t('chan.login.step1')))),
+            h('div', { className: 'ofm_loginstep' }, h('b', null, '2'), h('span', null, (channel.id === 'antigravity' ? t('chan.oauth.step2') : importing ? t('chan.import.step2') : t('chan.login.step2')))),
             login.url === '' ? null : h('code', { className: 'ofm_mono', style: { wordBreak: 'break-all', whiteSpace: 'pre-wrap' } }, login.url),
-            h('p', { className: 'ofm_note ofm_scanline' }, (channel.id === 'antigravity' ? t('chan.oauth.waiting') : t('chan.login.waiting')))),
+            h('p', { className: 'ofm_note ofm_scanline' }, (channel.id === 'antigravity' ? t('chan.oauth.waiting') : importing ? t('chan.import.waiting') : t('chan.login.waiting')))),
           h('div', { className: 'ofm_modalfoot' },
-            login.url === '' ? null : h('a', { className: 'ofm_btn primary', href: login.url, target: '_blank', rel: 'noreferrer noopener' }, (channel.id === 'antigravity' ? t('chan.oauth.open') : t('chan.login.open'))),
+            login.url === '' ? null : h('a', { className: 'ofm_btn primary', href: login.url, target: '_blank', rel: 'noreferrer noopener' }, (channel.id === 'antigravity' ? t('chan.oauth.open') : importing ? t('chan.import.open') : t('chan.login.open'))),
             h('button', { type: 'button', className: 'ofm_btn ghost', onClick: () => setLogin(null) }, t('chan.login.cancel')))))
 
       return h(Fragment, null, card, modal)
@@ -755,7 +768,7 @@ h('div', { className: 'ofm_modellist' }, models.filter(model => channel.id !== '
       const [auto, setAuto] = useState(undefined)
       const loadAuto = useCallback(async () => {
         if (!available) return
-        try { const value = await rpc('usage.autoCheckin', {}, 30_000); setAuto(value?.autoCheckin ?? null) } catch { setAuto(null) }
+        try { const value = await rpc('usage.autoCheckin', {}, 30_000); setAuto(value?.autoCheckin ?? null) /* null = 本机没有签到引擎，不是读失败 */ } catch { setAuto(null) }
       }, [available, rpc])
       useEffect(() => { void loadAuto() }, [loadAuto])
       const toggleAuto = async () => {

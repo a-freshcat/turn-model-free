@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import socket
+import subprocess
 import sys
 import urllib.request
 import webbrowser
@@ -29,6 +30,37 @@ def _open_browser(url: str) -> None:
         os.startfile(url)
     elif not webbrowser.open(url, new=2):
         raise OSError("No browser accepted the URL")
+
+
+API_KEY_FILE = ROOT / ".gateway-api-key"
+
+
+def _load_or_create_api_key() -> str:
+    """读取持久化的网关 key；不存在则生成一次并落盘。
+
+    文件权限尽力收紧（Windows 上仅当前用户可读）；失败也不阻断启动 ——
+    这把 key 是**本机回环**服务的凭据，收紧失败只是降低一点纵深。
+    """
+    try:
+        existing = API_KEY_FILE.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except (OSError, UnicodeError):
+        pass
+    key = secrets.token_urlsafe(32)
+    try:
+        API_KEY_FILE.write_text(key + "\n", encoding="utf-8")
+        if os.name == "nt":
+            subprocess.run(
+                ["icacls", str(API_KEY_FILE), "/inheritance:r",
+                 "/grant:r", os.environ.get("USERNAME", "") + ":F"],
+                capture_output=True, check=False,
+            )
+        else:
+            API_KEY_FILE.chmod(0o600)
+    except (OSError, UnicodeError):
+        pass
+    return key
 
 
 async def _open_when_ready(server, base: str, *, no_browser: bool) -> None:
@@ -99,8 +131,11 @@ def main() -> int:
     bootstrap = secrets.token_urlsafe(32)
     os.environ["GATEWAY_UI_BOOTSTRAP"] = bootstrap
     os.environ["GATEWAY_UI_LAUNCH_TOKEN"] = bootstrap
+    # API key 要跨重启稳定：外部客户端（以及 DSH 的 OpenAI 兼容配置）把它写进
+    # 配置文件后，每次重启都换一把会让那些客户端全部 401，而报错看起来像
+    # 「网关坏了」。优先环境变量，其次落盘的 key 文件，最后才新生成。
     if not os.environ.get("GATEWAY_API_KEY"):
-        os.environ["GATEWAY_API_KEY"] = secrets.token_urlsafe(32)
+        os.environ["GATEWAY_API_KEY"] = _load_or_create_api_key()
 
     print("Mode: " + ("configured upstream accounts" if account_path != ROOT / "accounts.demo.json" else "offline demo account pool"))
     print("Gateway API key (manual dashboard login or /docs -> Authorize):")

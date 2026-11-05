@@ -86,29 +86,48 @@ class AntigravityAuth:
             "antigravity/hub/2.29.0 (aidev_client; windows_amd64)"
         self.store = CredentialStore(root)
         self.client: httpx.AsyncClient | None = None
+        # 一个出口代理一个连接池。OAuth 刷新与配额查询用的是**同一份凭据**，
+        # 必须和对话请求从同一个 IP 出去；早先这里只认全局环境变量，账号级
+        # proxy 只作用于对话请求，于是同一账号的令牌刷新从另一个 IP 出网 ——
+        # 那正好是「一个凭据多个出口」的典型特征。
+        self.clients: dict[str | None, httpx.AsyncClient] = {}
         self.pending: dict[str, dict] = {}
         self.states: dict[str, str] = {}
         self.lock = anyio.Lock()
         self.refresh_locks: dict[str, anyio.Lock] = {}
 
-    def http(self):
-        if self.client is None:
-            self.client = httpx.AsyncClient(
+    @staticmethod
+    def resolve_proxy(proxy: str | None) -> str | None:
+        """账号级代理优先，其次全局，都没有则直连。与上游对话请求同一套规则。"""
+        return proxy or (os.environ.get("GATEWAY_UPSTREAM_PROXY") or None)
+
+    def http(self, proxy: str | None = None):
+        # 调用方/测试注入的客户端优先：它代表「所有出口都用这个 transport」。
+        if self.client is not None:
+            return self.client
+        resolved = self.resolve_proxy(proxy)
+        client = self.clients.get(resolved)
+        if client is None:
+            client = self.clients[resolved] = httpx.AsyncClient(
                 timeout=httpx.Timeout(20, connect=8), follow_redirects=False, trust_env=False,
-                proxy=os.environ.get("GATEWAY_UPSTREAM_PROXY") or None,
+                proxy=resolved,
             )
-        return self.client
+        return client
 
     async def aclose(self):
+        for client in self.clients.values():
+            await client.aclose()
+        self.clients.clear()
         if self.client is not None:
             await self.client.aclose()
+            self.client = None
 
-    async def json_request(self, method, url, *, token=None, **kwargs):
+    async def json_request(self, method, url, *, token=None, proxy=None, **kwargs):
         headers = {"User-Agent": self.user_agent}
         if token:
             headers["Authorization"] = "Bearer " + token
         try:
-            async with self.http().stream(method, url, headers=headers, **kwargs) as response:
+            async with self.http(proxy).stream(method, url, headers=headers, **kwargs) as response:
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     if len(body) + len(chunk) > 8 * 1024 * 1024:
@@ -231,14 +250,14 @@ class AntigravityAuth:
         except (OSError, ValueError, KeyError):
             raise OAuthFailure("本机授权凭据不可读取，请重新登录", reauth=True) from None
 
-    async def credential(self, id_: str, *, force=False):
+    async def credential(self, id_: str, *, force=False, proxy=None):
         lock = self.refresh_locks.setdefault(id_, anyio.Lock())
         async with lock:
             value = await self.load(id_)
             if not force and value.get("expires_at", 0) > time.time() + 90:
                 return value
             try:
-                reply = await self.json_request("POST", TOKEN_URL, data={
+                reply = await self.json_request("POST", TOKEN_URL, proxy=proxy, data={
                     "client_id": self.client_id, "client_secret": self.client_secret,
                     "refresh_token": value["refresh_token"], "grant_type": "refresh_token",
                 })
@@ -254,12 +273,13 @@ class AntigravityAuth:
                 await anyio.to_thread.run_sync(self.store.save, id_, updated)
             return updated
 
-    async def discover(self, credential: dict):
+    async def discover(self, credential: dict, proxy=None):
         token = credential["access_token"]
         project = credential.get("project_id")
         if not project:
             loaded = await self.json_request("POST", API_BASE + "/v1internal:loadCodeAssist",
-                                             token=token, json={"metadata": {"ideType": "ANTIGRAVITY"}})
+                                             token=token, proxy=proxy,
+                                             json={"metadata": {"ideType": "ANTIGRAVITY"}})
             for key in ("cloudaicompanionProject", "projectId", "project"):
                 value = loaded.get(key)
                 if isinstance(value, dict):
@@ -272,7 +292,7 @@ class AntigravityAuth:
                 raise OAuthFailure("Google 已授权，但项目尚未就绪；请先在官方 Antigravity 完成首次使用，再刷新状态")
             credential["project_id"] = project
         reply = await self.json_request("POST", API_BASE + "/v1internal:fetchAvailableModels",
-                                         token=token, json={"project": project})
+                                         token=token, proxy=proxy, json={"project": project})
         models = reply.get("models")
         if not isinstance(models, dict) or len(models) > 1024:
             raise OAuthFailure("Google 未返回有效的账号模型列表")
@@ -295,13 +315,13 @@ class AntigravityAuth:
         credential.pop("catalog_error", None)
         return credential
 
-    async def refresh_catalog(self, id_: str):
+    async def refresh_catalog(self, id_: str, proxy=None):
         lock = self.refresh_locks.setdefault(id_, anyio.Lock())
         # credential() holds the same per-account lock only during refresh.
-        value = await self.credential(id_)
+        value = await self.credential(id_, proxy=proxy)
         async with lock:
             # Reload the latest token before writing catalog metadata.
             value = await self.load(id_)
-            await self.discover(value)
+            await self.discover(value, proxy=proxy)
             await anyio.to_thread.run_sync(self.store.save, id_, value)
         return value

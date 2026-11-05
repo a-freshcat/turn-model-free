@@ -128,7 +128,9 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_import_poll_delete_and_duplicate_submission(self):
         await self.login()
-        response = await self.rpc("account.create", {"provider": "qoder"})
+        # 12 家的 account.create 现在走厂商登录（见 test_bridge_login.py）；
+        # 导入仍然可达，但走显式入口。
+        response = await self.rpc("account.importWindow", {"provider": "qoder"})
         pending = response.json()["value"]
         self.assertTrue(pending["loginUrl"].startswith("http://gateway/connect?request="))
         account = {"id": "secondary", "endpoint": "https://provider.example/v1/chat/completions",
@@ -182,7 +184,7 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_import_does_not_expose_submitted_secret(self):
         await self.login()
-        pending = (await self.rpc("account.create", {"provider": "buddy"})).json()["value"]["accountId"]
+        pending = (await self.rpc("account.importWindow", {"provider": "buddy"})).json()["value"]["accountId"]
         response = await self.client.post("/ui/import", json={
             "request_id": pending, "account": {"id": "bad", "endpoint": "not-a-url",
                                               "models": {"chat": "x"}, "token": "secret-must-not-echo"}},

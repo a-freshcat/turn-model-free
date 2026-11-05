@@ -35,6 +35,12 @@ class Account(BaseModel):
     status: Status = "active"
     fail_count: int = Field(default=0, ge=0)
     max_concurrency: int = Field(default=1, ge=1, le=32)
+    # 每个账号固定一条出站代理，空表示直连。**一个账号只能有一个出口**：
+    # 同一凭据在多个 IP 间漂移是最典型的多开特征，比共用出口更可疑。
+    # 未配置时回落到全局 GATEWAY_UPSTREAM_PROXY。
+    proxy: str | None = None
+    # 请求间随机抖动（毫秒）。人工操作的间隔从不整齐，固定间隔是自动化指纹。
+    jitter_ms: int = Field(default=0, ge=0, le=5000)
 
     @field_validator("channel", mode="before")
     @classmethod
@@ -98,7 +104,35 @@ class Account(BaseModel):
             self._check_header(value)
         if self.user_agent is not None:
             self._check_header(self.user_agent)
+        if self.proxy is not None:
+            self.proxy = self._check_proxy(self.proxy)
         return self
+
+    @staticmethod
+    def _check_proxy(raw: str) -> str | None:
+        """只接受带端口的 http/https/socks5 代理；空串归一成 None（= 直连）。
+
+        `socks5h` 一并归一成 `socks5`：httpx 只认后者，留着会让客户端在
+        构造时才抛 ImportError，那时已经离配置错误很远了。
+        """
+        text = raw.strip()
+        if not text:
+            return None
+        with_scheme = text if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", text) else "http://" + text
+        url = urlsplit(with_scheme.replace("socks5h://", "socks5://", 1))
+        if url.scheme not in {"http", "https", "socks5"}:
+            raise ValueError("proxy must be http, https or socks5")
+        if not url.hostname or url.port is None:
+            raise ValueError("proxy needs host and port (e.g. http://127.0.0.1:7890)")
+        if not 0 < url.port <= 65535:
+            raise ValueError("proxy port out of range")
+        if url.fragment or url.path not in {"", "/"}:
+            raise ValueError("proxy must not carry a path")
+        # 用**解析后**的 scheme 重建，而不是回原始字符串：`socks5h://` 必须归一成
+        # `socks5://`（httpx 只认后者）。早先这里 return with_scheme，归一化等于没做。
+        authority = url.netloc.rpartition("@")
+        auth, hostport = (authority[0] + "@", authority[2]) if authority[1] else ("", url.netloc)
+        return f"{url.scheme}://{auth}{hostport}"
 
     @staticmethod
     def _check_header(value: str) -> None:
@@ -137,6 +171,7 @@ def load_settings() -> Settings:
                 "accounts", "id", "driver", "endpoint", "models", "token", "token_env",
                 "cookie", "cookie_env", "user_agent", "device_headers", "status", "fail_count",
                 "max_concurrency", "tencent_prompt_level", "cooldown_seconds", "max_retries",
+                "proxy", "jitter_ms",
                 "pool_wait_seconds", "first_output_timeout_seconds", "stream_timeout_seconds",
             } else "<field>" for part in err["loc"]) or "<root>"
             for err in exc.errors(include_input=False, include_context=False, include_url=False)

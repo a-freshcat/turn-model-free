@@ -8,3 +8,7 @@ accounts.json
 .accounts-*.tmp
 .gateway-auth/
 .release/
+# 持久化的网关 API key（由 launch_web.py 生成，仅本机回环服务使用）
+.gateway-api-key
+# 手工改文件前的备份
+*.bak

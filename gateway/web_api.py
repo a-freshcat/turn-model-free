@@ -20,6 +20,7 @@ from html import escape
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from account_manager import AccountManager, PoolUnavailable, UpstreamFailure, _State
+from bridge_client import BridgeError, PackBridge
 from config import Settings
 from antigravity_auth import AntigravityAuth, OAuthFailure, model_pool
 
@@ -30,8 +31,38 @@ COOKIE = "gateway_ui_session"
 TTL = 8 * 3600
 
 
+def channel_capabilities(channel: str) -> dict:
+    """本机网关对该渠道**实际实现**的能力，供页面决定渲染哪些按钮。
+
+    页面沿用原插件的静态能力表（`CHANNEL_CREDITS`），那张表描述的是插件侧
+    13 家全部实现时的状态；本机网关是 Python 侧的子集实现。两边不一致时，
+    页面就会渲染出一个点下去必然失败的按钮，用户只会看到「操作失败」而不知道
+    是自己配错了还是根本没做。能力以这里为准。
+    """
+    real_quota = channel == "antigravity"
+    return {
+        "claim": False,        # 没有任何渠道在这一侧接入积分领取
+        "checkin": False,      # 没有后台签到引擎
+        "creditStatus": False,  # 没有「今日已签到」这类状态
+        "balances": real_quota,  # 只有 antigravity 有真实配额目录
+        "refresh": real_quota,   # 只有 antigravity 有可刷新的上游目录
+    }
+
+
 def failure(message: str, status: int = 400):
     return JSONResponse({"ok": False, "error": {"message": message}}, status_code=status)
+
+
+def unsupported(provider: str | None, feature: str, hint: str = "") -> str:
+    """统一的「本机网关没做这件事」文案。
+
+    宁可显式报错，也不要返回 `{"accounts": []}` 这种空成功：空成功在页面上
+    长成「—」或「未返回余额数据」，和「接口临时 502」看不出区别，用户只能反复
+    重试一个永远不会成功的东西。这里把「没实现」和「查询失败」分开。
+    """
+    scope = f"{provider} 渠道" if provider else "本机网关"
+    text = f"{scope}的{feature}尚未接入本机网关"
+    return f"{text}：{hint}" if hint else text
 
 
 def same_origin(request: Request) -> bool:
@@ -83,6 +114,10 @@ class WebManager:
         self.bootstrap = os.environ.pop("GATEWAY_UI_BOOTSTRAP", "")
         self.ag = AntigravityAuth(path.parent / ".gateway-auth")
         self.upstream.antigravity = self.ag
+        # 12 家渠道的登录委托给插件的 channel-pack（Node 子进程）。
+        # 桥是惰性启动的：只用 antigravity 的用户不必为它付进程开销。
+        self.bridge = PackBridge()
+        self.bridged: dict[str, dict] = {}
 
     def _write(self, raw, path=None):
         # Atomic replacement prevents a partial credential/config file on crash.
@@ -180,7 +215,10 @@ class WebManager:
         await self.commit(update, activate_real=True)
 
     async def refresh_oauth_account(self, id_: str):
-        value = await self.ag.refresh_catalog(id_)
+        # 配额目录查询与对话请求共用同一凭据，出口也必须一致。
+        account = next((a for a in self.pool.settings.accounts if a.id == id_), None)
+        value = await self.ag.refresh_catalog(id_, proxy=self.ag.resolve_proxy(
+            account.proxy if account else None))
         models = {"antigravity/" + name: name for name in value.get("catalog", {})}
         def update(raw):
             entry = next((a for a in raw["accounts"] if a["id"] == id_), None)
@@ -251,6 +289,7 @@ class WebManager:
                     "accounts": {"total": len(group), "enabled": sum(r["status"] == "active" for r in group)},
                     "models": {"total": len(models), "disabled": sum(m["disabled"] for m in models)},
                     "closed": bool(group) and all(r["status"] == "disabled" for r in group),
+                    "capabilities": channel_capabilities(channel),
                 }
                 for channel in CHANNELS
                 for group in [[r for r in rows if r["provider"] == channel]]
@@ -262,6 +301,8 @@ class WebManager:
         if method == "model.list":
             return {"models": model_rows(selected)}
         if method == "credits.status":
+            # 只有 buddy / minimax 在页面里读这个字段（今日签到徽标）。本机网关没有
+            # 签到体系，返回空数组就是「没有可展示的签到状态」，页面不渲染徽标。
             return {"accounts": []}
         if method == "credits.balances":
             if provider == "antigravity":
@@ -282,32 +323,83 @@ class WebManager:
                     except OAuthFailure as exc:
                         balances.append({"accountId": row["id"], "balance": None, "error": str(exc)})
                 return {"accounts": balances}
-            return {"accounts": []}
+            # 其余渠道没有可查询的余额接口。返回空数组会让每一行显示「未返回余额数据」，
+            # 与「接口 502」完全同形；这里把原因写进每个账号，页面逐行照出来。
+            reason = unsupported(provider, "余额查询",
+                                 "该渠道在本机只能是导入的兼容上游，余额以你自己的上游为准")
+            return {"accounts": [{"accountId": row["id"], "balance": None, "error": reason}
+                                 for row in selected]}
         if method == "credits.claimAll":
-            raise ValueError("当前驱动尚未接入该渠道的积分领取接口")
+            # 只有 antigravity 有真实配额；其余渠道在本机网关里是「导入的兼容上游」，
+            # 没有可签到的账号体系。以前这里报的是「当前驱动尚未接入」，页面把它当
+            # 成一次失败的写操作，用户会反复重试一个永远不可能成功的按钮。
+            raise ValueError(unsupported(provider, "积分领取",
+                                         "多数渠道只有导入的兼容上游，没有签到接口"))
         if method == "usage.autoCheckin":
             if "enabled" in payload:
-                raise ValueError("当前驱动尚未接入自动签到接口")
+                raise ValueError(unsupported(provider, "自动签到", "本机网关没有后台签到引擎"))
+            # 读操作返回 None 是「本机没有这个引擎」，页面据此不渲染那个开关；
+            # 这比返回 {enabled:false} 更诚实——后者看起来像「关着」，其实点不动。
             return {"autoCheckin": None}
         if method == "account.create":
+            if provider not in CHANNELS:
+                raise ValueError("请选择渠道")
             if provider == "antigravity":
+                # antigravity 有自己的 Python OAuth（凭据落在 .gateway-auth/，
+                # 由本进程直接使用），不走桥。
                 return await self.ag.begin(base)
+            # 其余 12 家用插件自己的 channel-pack 登录：厂商端点、PKCE、DPoP、
+            # 二维码页、轮询节奏都在那边，网关只负责把 URL 交出去。
+            try:
+                value = await self.bridge.call("account.create", {"provider": provider})
+            except BridgeError as exc:
+                raise ValueError(f"无法启动 {provider} 登录：{exc}") from None
+            if not isinstance(value, dict) or not value.get("loginUrl"):
+                raise ValueError(f"{provider} 登录未返回登录地址")
+            # 记住归属：login.poll 需要 provider 才能问到对的账号。
+            self.bridged[value["accountId"]] = {"provider": provider,
+                                                "expires": time.monotonic() + 1800}
+            self.bridged = {k: v for k, v in self.bridged.items() if v["expires"] > time.monotonic()}
+            return {"accountId": value["accountId"], "loginUrl": value["loginUrl"]}
+        if method == "account.importWindow":
+            # 显式的导入窗口。原先 12 家的 account.create 直接返回这个页面，
+            # 现在它们走厂商登录，导入仍要可达——用户手上已有的兼容上游配置
+            # 不该因为上游登录能力补齐而失去入口。
+            if provider not in CHANNELS or provider == "antigravity":
+                raise ValueError("该渠道不支持导入")
             self.pending = {k: v for k, v in self.pending.items() if v["expires"] > time.monotonic()}
             if len(self.pending) >= 32:
                 raise ValueError("待添加窗口过多，请稍后重试")
-            if provider not in CHANNELS:
-                raise ValueError("请选择渠道")
             id_ = secrets.token_urlsafe(24)
             self.pending[id_] = {"provider": provider, "expires": time.monotonic() + 600}
             return {"accountId": id_, "loginUrl": base + "/connect?request=" + id_}
         if method == "login.poll":
             if account_id in self.ag.pending:
                 return await self.ag.poll(account_id)
+            if account_id in self.bridged:
+                entry = self.bridged[account_id]
+                if entry["expires"] <= time.monotonic():
+                    self.bridged.pop(account_id, None)
+                    return {"done": True, "success": False, "error": "授权窗口已过期，请重新添加账号"}
+                try:
+                    value = await self.bridge.call("login.poll", {
+                        "accountId": account_id, "provider": entry["provider"]})
+                except BridgeError as exc:
+                    return {"done": True, "success": False, "error": str(exc)}
+                if isinstance(value, dict) and value.get("done") is True:
+                    self.bridged.pop(account_id, None)
+                    if value.get("success") is True:
+                        # 凭据由桥接进程持有；这里只报告成功，不复制令牌——
+                        # 网关读不到也用不上别的渠道的凭据。
+                        return {"done": True, "success": True, "login": entry["provider"]}
+                    return {"done": True, "success": False,
+                            "error": str(value.get("error") or "登录未完成")}
+                return {"done": False}
             pending = self.pending.get(account_id)
-            if pending is None or pending["expires"] < time.monotonic():
-                return {"done": True, "success": False, "error": "添加窗口已过期"}
-            return {"done": bool(pending.get("saved")), "success": bool(pending.get("saved")),
-                    "login": pending.get("saved", "")}
+            if pending is not None and pending["expires"] >= time.monotonic():
+                return {"done": bool(pending.get("saved")), "success": bool(pending.get("saved")),
+                        "login": pending.get("saved", "")}
+            return {"done": True, "success": False, "error": "添加窗口已过期"}
         if method == "account.delete":
             def remove(raw):
                 find_account(raw)
@@ -328,6 +420,12 @@ class WebManager:
             if target["driver"] == "antigravity":
                 await self.refresh_oauth_account(account_id)
             return {"ok": True}
+        if method == "model.clearDead":
+            # 页面在 model.dead === true 时把开关渲染成「恢复」。本机网关的模型表
+            # 来自账号配置或 OAuth 目录，没有「上游已下架」这个标记，所以永远没有
+            # 可恢复的项。显式说明，而不是落到末尾那句「尚未实现该操作」。
+            raise ValueError(unsupported(provider, "下架模型恢复",
+                                         "模型表直接取自账号配置，不存在需要恢复的下架项"))
         if method in {"model.setDisabled", "model.setAllDisabled"}:
             if provider not in CHANNELS or type(payload.get("disabled")) is not bool:
                 raise ValueError("模型开关参数无效")
