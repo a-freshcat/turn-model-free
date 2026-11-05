@@ -32,9 +32,11 @@ class InvalidRequest(Exception):
 
 
 class PoolUnavailable(Exception):
-    def __init__(self, *, retry_after: int | None = None, budget_exhausted: bool = False):
+    def __init__(self, *, retry_after: int | None = None, budget_exhausted: bool = False,
+                 failure_reason: str | None = None):
         self.retry_after = retry_after
         self.budget_exhausted = budget_exhausted
+        self.failure_reason = failure_reason
 
 
 @dataclass
@@ -183,20 +185,29 @@ class AccountManager:
 
     async def failover(
         self, model: str, attempt: Callable[[Lease, AsyncExitStack], Awaitable[T]],
-        lifetime: AsyncExitStack,
+        lifetime: AsyncExitStack, *, timeout_seconds: float | None = None,
+        timeout_reason: str = "first_output_timeout",
     ) -> T:
         tried: set[str] = set()
+        last_failure = None
         for _ in range(self.settings.max_retries + 1):
             current = AsyncExitStack()
             try:
-                lease = await self.acquire(model, tried, current)
+                try:
+                    lease = await self.acquire(model, tried, current)
+                except PoolUnavailable as exc:
+                    # Keep the cause of this request's failed attempt. A following
+                    # acquire against its cooling account must not erase it.
+                    exc.failure_reason = last_failure.reason if last_failure else None
+                    raise
                 tried.add(lease.account.id)
                 try:
-                    with anyio.fail_after(self.settings.first_output_timeout_seconds):
+                    with anyio.fail_after(timeout_seconds if timeout_seconds is not None
+                                          else self.settings.first_output_timeout_seconds):
                         result = await attempt(lease, current)
                 except (UpstreamFailure, TimeoutError) as exc:
-                    await lease.fail(exc if isinstance(exc, UpstreamFailure)
-                                     else UpstreamFailure("first_output_timeout"))
+                    last_failure = exc if isinstance(exc, UpstreamFailure) else UpstreamFailure(timeout_reason)
+                    await lease.fail(last_failure)
                     guard = getattr(self, 'protection', None)
                     if guard is not None:
                         guard.check()
@@ -211,8 +222,10 @@ class AccountManager:
         async with self.condition:
             remaining = self._eligible(model, tried)
             if any(s.status == "active" for s in remaining):
-                raise PoolUnavailable(budget_exhausted=True)
+                raise PoolUnavailable(budget_exhausted=True,
+                                      failure_reason=last_failure.reason if last_failure else None)
             cooling = [s.cooldown_until for s in self._eligible(model, set())
                        if s.status == "cooldown"]
             retry = max(1, math.ceil(min(cooling) - time.monotonic())) if cooling else None
-            raise PoolUnavailable(retry_after=retry)
+            raise PoolUnavailable(retry_after=retry,
+                                  failure_reason=last_failure.reason if last_failure else None)

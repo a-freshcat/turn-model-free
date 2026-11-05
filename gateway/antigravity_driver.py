@@ -230,7 +230,8 @@ def candidate_delta(candidate):
                 call["extra_content"] = {"google": {"thought_signature": part["thoughtSignature"]}}
             calls.append(call)
         if any(key in part for key in ("inlineData", "fileData", "executableCode", "codeExecutionResult")):
-            raise UpstreamFailure("antigravity_unsupported_output")
+            raise InvalidRequest("This gateway currently supports text and function-call output only; "
+                                 "image generation and code-execution output need a separate adapter.")
     delta = {}
     if text:
         delta["content"] = "".join(text)
@@ -278,7 +279,8 @@ async def send_native(auth, client, account, messages, stream, *, model, options
                 headers={"Authorization": "Bearer " + credential["access_token"],
                          "User-Agent": auth.user_agent,
                          "Accept": "text/event-stream" if stream else "application/json",
-                         "Accept-Encoding": "identity"}, json=envelope), stream=True)
+                         "Accept-Encoding": "identity"}, json=envelope,
+                timeout=httpx.Timeout(None, connect=5, pool=2, write=15)), stream=True)
             lifetime.push_async_callback(response.aclose)
             if response.status_code != 401 or attempt:
                 break

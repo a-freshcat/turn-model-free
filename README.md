@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。通过网页统一管理账号、查看额度、选择模型和测试流式对话。
 
-**当前版本：v1.2.10** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.2.11** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
 
 ## 功能
 
@@ -117,3 +117,5 @@ curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8199/v
 ## 借鉴
 
 界面与腾讯 11128 防护层借鉴 `dsh-our-free-model`；Antigravity 协议实现参考 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)。感谢相关项目，来源与许可说明见 [NOTICE](gateway/NOTICE.md)。
+
+生成超时与生图能力边界见 [说明](docs/generation-timeouts.md)。本版未提供原生生图。

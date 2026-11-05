@@ -2,7 +2,7 @@
   "cooldown_seconds": 600,
   "max_retries": 3,
   "pool_wait_seconds": 1,
-  "first_output_timeout_seconds": 30,
+  "first_output_timeout_seconds": 120,
   "stream_timeout_seconds": 300,
   "accounts": [
     {

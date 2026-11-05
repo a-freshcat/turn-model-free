@@ -6,6 +6,7 @@ import json
 import time
 import unittest
 from contextlib import AsyncExitStack
+from types import SimpleNamespace
 
 import anyio
 import httpx
@@ -87,6 +88,9 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.upstream = UpstreamClient(factory)
         app.state.pool, app.state.upstream, app.state.api_key = self.pool, self.upstream, b"test-key"
+        async def plugin_models():
+            return []
+        app.state.web = SimpleNamespace(plugin=SimpleNamespace(probe=plugin_models))
         client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://gateway",
             headers={"Authorization": "Bearer test-key"},
@@ -283,7 +287,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             return sse([], block=True)
         client = self.gateway(handler, config(1, first_output_timeout_seconds=0.01))
         response = await client.post("/v1/chat/completions", json={**self.payload, "stream": True})
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 504)
         self.assertTrue(self.responses[0].is_closed)
         self.assertEqual(self.pool.states[0].in_flight, 0)
 

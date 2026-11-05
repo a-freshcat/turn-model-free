@@ -102,7 +102,10 @@ class ChatResponse(Response):
         lifetime = AsyncExitStack()
         try:
             try:
-                lease, result = await self.pool.failover(model, attempt, lifetime)
+                lease, result = await self.pool.failover(model, attempt, lifetime,
+                    timeout_seconds=(self.pool.settings.first_output_timeout_seconds if stream
+                                     else self.pool.settings.stream_timeout_seconds),
+                    timeout_reason="first_output_timeout" if stream else "completion_timeout")
             except ProtectionBlocked as exc:
                 await exc.response()(scope, receive, send)
                 return
@@ -113,6 +116,11 @@ class ChatResponse(Response):
             except PoolUnavailable as exc:
                 if exc.retry_after is not None:
                     headers["Retry-After"] = str(exc.retry_after)
+                if exc.failure_reason in {"first_output_timeout", "completion_timeout"}:
+                    await error_response(504,
+                        "Upstream generation timed out. Retry after the temporary backoff.",
+                        "upstream_timeout", headers=headers)(scope, receive, send)
+                    return
                 response = (
                     error_response(502, "Upstream retry budget exhausted.", "upstream_retry_exhausted",
                                    headers=headers) if exc.budget_exhausted
@@ -152,6 +160,10 @@ class ChatResponse(Response):
             # HTTP 200 已发送；错误帧之后立即结束，不发 [DONE]，避免把截断伪装成成功。
             await send({"type": "http.response.body", "body": encode_event(error_body(
                 "The upstream stream ended before completion.", "upstream_stream_interrupted",
+            )), "more_body": True})
+        except InvalidRequest as exc:
+            await send({"type": "http.response.body", "body": encode_event(error_body(
+                str(exc), "unsupported_output", "invalid_request_error",
             )), "more_body": True})
         else:
             await lease.succeed()

@@ -149,7 +149,7 @@ class Settings(BaseModel):
     network_cooldown_max_seconds: float = Field(default=120, gt=0, le=3600)
     max_retries: int = Field(default=3, ge=0, le=3)
     pool_wait_seconds: float = Field(default=1, ge=0, le=30)
-    first_output_timeout_seconds: float = Field(default=30, gt=0, le=300)
+    first_output_timeout_seconds: float = Field(default=120, gt=0, le=300)
     stream_timeout_seconds: float = Field(default=300, gt=0, le=3600)
 
     @model_validator(mode="after")
