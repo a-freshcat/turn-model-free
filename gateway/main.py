@@ -12,7 +12,7 @@ from uuid import uuid4
 import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -22,8 +22,9 @@ from starlette.types import Receive, Scope, Send
 from account_manager import AccountManager, InvalidRequest, Lease, PoolUnavailable, UpstreamFailure
 from config import load_settings
 from demo_upstream import transport_for
+from plugin_gateway import PluginGateway, PluginGatewayError
 from upstream_client import PreparedStream, UpstreamClient, encode_event
-from web_api import WebManager, authorized as web_authorized, failure as web_failure, router as web_router
+from web_api import CHANNELS, WebManager, authorized as web_authorized, failure as web_failure, router as web_router
 from antigravity_auth import OAuthCallbackRedaction
 
 ROOT = Path(__file__).resolve().parent
@@ -223,9 +224,15 @@ async def models(request: Request):
     unauthorized = auth_error(request)
     if unauthorized is not None:
         return unauthorized
+    listed = list(request.app.state.pool.models)
+    # 12 家的模型由插件网关提供；连不上时只是这批模型缺席，不影响本机号池。
+    try:
+        listed += [m for m in await request.app.state.web.plugin.probe() if m not in listed]
+    except PluginGatewayError:
+        pass
     return {"object": "list", "data": [
         {"id": model, "object": "model", "created": 0, "owned_by": "gateway"}
-        for model in request.app.state.pool.models
+        for model in listed
     ]}
 
 
@@ -242,21 +249,27 @@ async def completions(body: ChatRequest, request: Request):
     unauthorized = auth_error(request)
     if unauthorized is not None:
         return unauthorized
-    return make_chat_response(body, request)
+    return await make_chat_response(body, request)
 
 
 @app.post("/ui/chat", include_in_schema=False)
 async def web_chat(body: ChatRequest, request: Request):
     if not web_authorized(request):
         return web_failure("请先连接本机网关", 401)
-    return make_chat_response(body, request)
+    return await make_chat_response(body, request)
 
 
-def make_chat_response(body: ChatRequest, request: Request):
+async def make_chat_response(body: ChatRequest, request: Request):
     pool: AccountManager = request.app.state.pool
-    if body.model not in pool.models:
-        return error_response(404, "The requested model is not configured.", "model_not_found",
-                              "invalid_request_error", "model")
+    bridge_model = body.model not in pool.models
+    if bridge_model:
+        # 12 家的模型由插件网关提供（id 形如 `codearts/GLM-5.2`）。本机号池不认识
+        # 它们，但插件认识——转发过去即可，不必在这里重实现各家的推理协议。
+        provider = PluginGateway.provider_of(body.model)
+        if not provider or provider == "antigravity" or provider not in CHANNELS:
+            return error_response(404, "The requested model is not configured.", "model_not_found",
+                                  "invalid_request_error", "model")
+        return await _plugin_chat(body, request)
     if body.stream is not True and body.stream_options is not None:
         return error_response(400, "stream_options requires stream=true.", "invalid_request",
                               "invalid_request_error", "stream_options")
@@ -267,3 +280,38 @@ def make_chat_response(body: ChatRequest, request: Request):
         return error_response(400, "The request contains an invalid JSON value.",
                               "invalid_request", "invalid_request_error")
     return ChatResponse(body, pool, request.app.state.upstream)
+
+
+async def _plugin_chat(body: ChatRequest, request: Request):
+    """把 12 家的对话转发给插件网关，按客户端要求做流式或整体透传。"""
+    gateway: PluginGateway = request.app.state.web.plugin
+    payload = body.model_dump(mode="json", exclude_none=True)
+    try:
+        upstream = await gateway.chat(payload, stream=body.stream is True)
+    except PluginGatewayError as exc:
+        return error_response(503, str(exc), "plugin_gateway_unavailable", "api_error")
+    if upstream.status_code != 200:
+        try:
+            detail = await upstream.aread()
+        finally:
+            await upstream.aclose()
+        return Response(content=detail, status_code=upstream.status_code,
+                        media_type=upstream.headers.get("content-type", "application/json"))
+    if body.stream is not True:
+        try:
+            content = await upstream.aread()
+        finally:
+            await upstream.aclose()
+        return Response(content=content, status_code=200,
+                        media_type=upstream.headers.get("content-type", "application/json"))
+
+    async def frames():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(frames(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no"})

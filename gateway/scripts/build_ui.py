@@ -38,7 +38,7 @@ source = source.replace(list_marker,
     "showAllModels || model.pool !== 'gemini_shared').map(model => h('div', {")
 source = source.replace(quota_marker,
     "if (creditCapability.quota) return h('a', { className: 'ofm_creditbadge strong', "
-    "href: '/quota?account=' + encodeURIComponent(row.id), target: '_blank', rel: 'noopener', "
+    "href: '/quota?account=' + encodeURIComponent(row.id), target: '_blank', "
     "title: '查看三个独立配额池' }, '查看配额 · 三个池');\n                    " + quota_marker)
 model_name_marker = "h('span', { className: 'ofm_id', title: model.id }, model.name ?? model.id),"
 if source.count(model_name_marker) != 1:

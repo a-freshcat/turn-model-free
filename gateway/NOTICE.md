@@ -17,7 +17,7 @@ WeakSet 异常登记与 JavaScript 遥测。路径占位符冲突时保留原文
 ## 页面来源
 
 按用户指定，本次页面以本地源码
-`原 free-m-clone 源码快照` 为准。
+`C:\Users\handsomeboys\Documents\deepseek-harness\repair_question\free-m-clone` 为准。
 页面工厂、渠道组件、词典、CSS、设计令牌及含 React 的原运行包均逐字节复制到
 `web/vendor/free-m-clone`，来源路径与哈希记录在 provenance.json。
 该本地版本的这 8 个文件与前述 GitHub 快照一致；原始目录未作修改。

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>白嫖模型接入 · 本机号池</title>
   <link rel="stylesheet" href="/assets/vendor/free-m-clone/dist/demo.css">
-  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/app.css?v=20261105-ui4">
 </head>
 <body>
   <div class="demo-shell" id="dashboard-shell">
@@ -24,7 +24,7 @@
           <label>语言<select id="locale"><option value="zh">中文</option><option value="en">English</option></select></label>
           <button type="button" id="theme">切换深色</button>
           <button type="button" id="refresh">刷新号池状态</button>
-          <a class="ofm_btn ghost" href="/quota" target="_blank" rel="noopener">配额看板 · 三个池</a>
+          <a id="quota-link" class="side-action-btn" href="/quota" target="_blank">配额看板 · 三个池</a>
           <button type="button" id="reconnect">重新连接</button>
         </div>
       </section>
@@ -32,9 +32,9 @@
         <h2>接口测试</h2>
         <form id="chat-form" class="guard-form">
           <label class="guard-row">模型<select id="chat-model" aria-label="测试模型" required></select></label>
-          <button class="ofm_minibtn" id="model-more" type="button">显示其他 Gemini / 内部型号</button>
+          <button class="side-action-btn" id="model-more" type="button">显示其他 Gemini / 内部型号</button>
           <label class="guard-row">消息<textarea id="chat-message" rows="3" required>你好，请简单介绍一下自己。</textarea></label>
-          <div class="guard-actions"><button class="ofm_btn" id="chat-submit" type="submit">发送测试</button><button class="ofm_btn ghost" id="chat-stop" type="button" disabled>停止</button></div>
+          <div class="guard-actions"><button class="side-action-btn primary" id="chat-submit" type="submit">发送测试</button><button class="side-action-btn" id="chat-stop" type="button" disabled>停止</button></div>
           <pre id="chat-output" class="guard-pre" aria-live="polite">选择一个模型，测试实际的流式接口。</pre>
         </form>
       </section>
@@ -75,7 +75,7 @@
       <div class="guard-actions"><button class="ofm_btn primary" type="submit" id="import-submit">保存账号</button><button class="ofm_btn ghost" type="button" id="import-close">关闭窗口</button></div>
     </form>
   </main>
-  <script src="/assets/channel-runtime.js?v=20261105-cap1"></script>
-  <script type="module" src="/assets/app.mjs?v=20261105-ui3"></script>
+  <script src="/assets/channel-runtime.js?v=20261105-cap2"></script>
+  <script type="module" src="/assets/app.mjs?v=20261105-ui5"></script>
 </body>
 </html>

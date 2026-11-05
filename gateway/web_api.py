@@ -23,6 +23,7 @@ from account_manager import AccountManager, PoolUnavailable, UpstreamFailure, _S
 from bridge_client import BridgeError, PackBridge
 from config import Settings
 from antigravity_auth import AntigravityAuth, OAuthFailure, model_pool
+from plugin_gateway import PluginGateway, PluginGatewayError
 
 router = APIRouter()
 CHANNELS = ("codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
@@ -118,6 +119,8 @@ class WebManager:
         # 桥是惰性启动的：只用 antigravity 的用户不必为它付进程开销。
         self.bridge = PackBridge()
         self.bridged: dict[str, dict] = {}
+        # 12 家的账号、凭据、模型与对话都由插件负责；这里只发现并代理。
+        self.plugin = PluginGateway()
 
     def _write(self, raw, path=None):
         # Atomic replacement prevents a partial credential/config file on crash.
@@ -258,6 +261,135 @@ class WebManager:
                     row.update(refreshable=False, authStatus="reauth")
         return result
 
+    async def _delete_from_plugin(self, account_id: str) -> bool:
+        """账号在插件里就由插件删；返回是否处理了。
+
+        判据是「插件的账号表里有这个 id」，不是「本机表里没有」。先问插件再动
+        本机表，避免把一个插件账号误判成「不存在」。
+        """
+        if not account_id:
+            return False
+        for provider in CHANNELS:
+            if provider == "antigravity":
+                continue
+            try:
+                value = await self.bridge.call("account.list", {"provider": provider})
+            except BridgeError:
+                continue
+            ids = {row.get("id") for row in (value or {}).get("accounts") or []}
+            if account_id not in ids:
+                continue
+            try:
+                await self.bridge.call("account.delete", {"accountId": account_id}, attempts=1)
+            except BridgeError as exc:
+                raise ValueError(f"删除失败：{exc}") from None
+            self.bridged.pop(account_id, None)
+            return True
+        return False
+
+    async def _update_in_plugin(self, account_id: str, enabled: bool) -> None:
+        try:
+            await self.bridge.call("account.update", {
+                "accountId": account_id, "patch": {"enabled": enabled}}, attempts=1)
+        except BridgeError as exc:
+            raise ValueError(f"更新失败：{exc}") from None
+
+    async def _discard_placeholder(self, account_id: str) -> None:
+        """删掉一个登录未完成的占位账号。失败只记日志，不阻断调用方。"""
+        try:
+            await self.bridge.call("account.delete", {"accountId": account_id}, attempts=1)
+        except BridgeError:
+            pass
+
+    async def _reap_expired_windows(self) -> None:
+        """回收已过期的登录窗口，连占位账号一起删掉。"""
+        now = time.monotonic()
+        expired = [key for key, row in self.bridged.items() if row["expires"] <= now]
+        for key in expired:
+            self.bridged.pop(key, None)
+            await self._discard_placeholder(key)
+
+    async def plugin_accounts(self, provider):
+        """该渠道在插件（channel-pack）里的账号，映射成页面用的行。
+
+        12 家的账号由插件持有：登录、凭据、刷新、限流都在那边。网关不复制凭据，
+        只把「有哪些账号」如实报给页面——否则用户在插件里登录完了，这里还是 0/0。
+
+        **占位记录只显示本次会话正在登录的那个。** `account.create` 会先往插件
+        账号表里写一条「昵称等于 id」的行，登录没完成时它不会自己消失。历史遗留的
+        这类空壳一律不显示并顺手删掉，否则页面会出现「账号 0/21」——一个都点不动，
+        却占着 21 个位置。
+        """
+        try:
+            value = await self.bridge.call("account.list", {"provider": provider})
+        except BridgeError:
+            return []
+        out, stale = [], []
+        for entry in (value or {}).get("accounts") or []:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            account_id = entry["id"]
+            nickname = entry.get("nickname") or account_id
+            # `account.create` 会先写一条「昵称等于 id」的占位记录，登录完成后才
+            # 换成真实昵称/邮箱。只有本次会话正在等它的那个才值得显示。
+            pending = nickname == account_id
+            if pending and account_id not in self.bridged:
+                stale.append(account_id)
+                continue
+            enabled = entry.get("enabled") is not False
+            out.append({
+                "id": account_id, "provider": provider,
+                "driver": "channel-pack",
+                "nickname": f"{nickname} · 等待授权" if pending else nickname,
+                "enabled": enabled and not pending,
+                "status": "disabled" if pending else ("active" if enabled else "disabled"),
+                "expiresAt": int(entry.get("expiresAt") or 0),
+                "models": {}, "disabled_models": [],
+                "in_flight": 0, "fail_count": 0, "max_concurrency": 1,
+                "refreshable": bool(entry.get("refreshable")),
+                # 页面据此把「插件里的账号」和「本机导入的上游」区分开。
+                "source": "plugin",
+                "pending": pending,
+            })
+        # 遗留空壳就地清掉：留着只会越堆越多，而且它们是本次会话不认识的记录。
+        for account_id in stale:
+            await self._discard_placeholder(account_id)
+        return out
+
+    async def plugin_models(self, provider):
+        """该渠道可用的模型：取自插件网关的 `/v1/models`，按 `provider/` 前缀过滤。
+
+        模型 id 必须与插件网关一致（`codearts/GLM-5.2`），否则对话时转发不过去。
+
+        插件网关只暴露**当前启用**的模型。某个渠道全部模型被关掉时（用户可以在
+        插件里关），这里会拿到空列表，页面就显示「模型 —」。那种情况下退回插件的
+        `model.list`，让用户至少看到有哪些模型、可以去插件里开启。
+        """
+        prefix = provider + "/"
+        try:
+            models = await self.plugin.probe()
+        except PluginGatewayError:
+            models = []
+        listed = [{"id": model, "name": model[len(prefix):], "pool": None, "disabled": False}
+                  for model in models if model.startswith(prefix)]
+        if listed:
+            return listed
+        # 回退：插件自己的模型表（id 不带前缀，这里补上以保持对外一致）。
+        try:
+            value = await self.bridge.call("model.list", {"provider": provider})
+        except BridgeError:
+            return []
+        out = []
+        for row in (value or {}).get("models") or []:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            out.append({"id": prefix + row["id"],
+                        "name": row.get("name") or row["id"],
+                        "pool": None,
+                        "disabled": True,   # 插件网关没暴露它，对话会失败
+                        "native_id": row["id"]})
+        return out
+
     async def rpc(self, method, payload, base):
         provider = payload.get("provider")
         account_id = payload.get("accountId")
@@ -284,7 +416,7 @@ class WebManager:
                                       for r in matches if r.get("model_details", {}).get(r["models"][alias])), {})]]
 
         if method == "provider.status":
-            return {"statuses": {
+            statuses = {
                 channel: {
                     "accounts": {"total": len(group), "enabled": sum(r["status"] == "active" for r in group)},
                     "models": {"total": len(models), "disabled": sum(m["disabled"] for m in models)},
@@ -294,12 +426,40 @@ class WebManager:
                 for channel in CHANNELS
                 for group in [[r for r in rows if r["provider"] == channel]]
                 for models in [model_rows(group)]
-            }}
+            }
+            # 12 家的账号在插件里，不在本机 accounts.json。不合并就会显示 0/0，
+            # 而用户在插件里明明已经登录过。
+            for channel in CHANNELS:
+                if channel == "antigravity":
+                    continue
+                plugin_rows = await self.plugin_accounts(channel)
+                if not plugin_rows:
+                    continue
+                base = statuses[channel]
+                total = base["accounts"]["total"] + len(plugin_rows)
+                enabled = base["accounts"]["enabled"] + sum(r["status"] == "active" for r in plugin_rows)
+                statuses[channel]["accounts"] = {"total": total, "enabled": enabled}
+                if not base["models"]["total"]:
+                    models = await self.plugin_models(channel)
+                    if models:
+                        statuses[channel]["models"] = {"total": len(models),
+                                                       "disabled": 0}
+            return {"statuses": statuses}
         if method == "account.list":
-            return {"accounts": [{k: v for k, v in r.items() if k not in {"models", "disabled_models", "model_details"}}
-                                 for r in selected]}
+            merged = [{k: v for k, v in r.items() if k not in {"models", "disabled_models", "model_details"}}
+                      for r in selected]
+            # 插件里的账号排在前面：那才是用户刚登录过、期待看到的东西。
+            if provider is not None and provider != "antigravity":
+                seen = {row["id"] for row in merged}
+                merged = [r for r in await self.plugin_accounts(provider) if r["id"] not in seen] + merged
+            return {"accounts": merged}
         if method == "model.list":
-            return {"models": model_rows(selected)}
+            models = model_rows(selected)
+            if provider is not None and provider != "antigravity":
+                aliases = {m["id"] for m in models}
+                models = models + [m for m in await self.plugin_models(provider)
+                                   if m["id"] not in aliases]
+            return {"models": models}
         if method == "credits.status":
             # 只有 buddy / minimax 在页面里读这个字段（今日签到徽标）。本机网关没有
             # 签到体系，返回空数组就是「没有可展示的签到状态」，页面不渲染徽标。
@@ -359,7 +519,7 @@ class WebManager:
             # 记住归属：login.poll 需要 provider 才能问到对的账号。
             self.bridged[value["accountId"]] = {"provider": provider,
                                                 "expires": time.monotonic() + 1800}
-            self.bridged = {k: v for k, v in self.bridged.items() if v["expires"] > time.monotonic()}
+            await self._reap_expired_windows()
             return {"accountId": value["accountId"], "loginUrl": value["loginUrl"]}
         if method == "account.importWindow":
             # 显式的导入窗口。原先 12 家的 account.create 直接返回这个页面，
@@ -380,6 +540,10 @@ class WebManager:
                 entry = self.bridged[account_id]
                 if entry["expires"] <= time.monotonic():
                     self.bridged.pop(account_id, None)
+                    # 过期的占位账号必须一起删掉：`account.create` 会先写一条
+                    # 「昵称等于 id」的空壳，登录没完成时它不会自己消失。放任不管，
+                    # 账号表会堆成上百条，用户看到的是一片无法使用的假账号。
+                    await self._discard_placeholder(account_id)
                     return {"done": True, "success": False, "error": "授权窗口已过期，请重新添加账号"}
                 try:
                     value = await self.bridge.call("login.poll", {
@@ -401,6 +565,10 @@ class WebManager:
                         "login": pending.get("saved", "")}
             return {"done": True, "success": False, "error": "添加窗口已过期"}
         if method == "account.delete":
+            # 插件里的账号不在本机 accounts.json 里。以前这里一律走本机表，
+            # 于是删一个插件账号会报「账号不存在」——账号明明就在页面上。
+            if await self._delete_from_plugin(account_id):
+                return {"ok": True}
             def remove(raw):
                 find_account(raw)
                 raw["accounts"] = [a for a in raw["accounts"] if a["id"] != account_id]
@@ -410,6 +578,10 @@ class WebManager:
             patch = payload.get("patch", {})
             if not isinstance(patch, dict) or type(patch.get("enabled")) is not bool or set(patch) != {"enabled"}:
                 raise ValueError("仅支持启用或停用账号")
+            owner = next((r for r in rows if r["id"] == account_id), None)
+            if owner is not None and owner.get("source") == "plugin":
+                await self._update_in_plugin(account_id, patch["enabled"])
+                return {"ok": True}
             await self.commit(lambda raw: find_account(raw).update(
                 status="active" if patch["enabled"] else "disabled"))
             return {"ok": True}
@@ -417,6 +589,9 @@ class WebManager:
             target = next((r for r in rows if r["id"] == account_id), None)
             if target is None:
                 raise ValueError("账号不存在")
+            if target.get("source") == "plugin":
+                # 插件的刷新是它自己的事（令牌续期在那边），网关只需重新读表。
+                return {"ok": True}
             if target["driver"] == "antigravity":
                 await self.refresh_oauth_account(account_id)
             return {"ok": True}

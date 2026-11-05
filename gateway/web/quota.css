@@ -1,39 +1,669 @@
-.quota-shell { max-width: 1240px; margin: 28px auto; padding: 0 24px 48px; gap: 18px; }
-.quota-actions, .quota-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.quota-actions { margin-left: auto; }
-.quota-actions a { text-decoration: none; }
-.quota-toolbar label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+/* Quota Pool & Account Scheduling Table (combines Image 2 table structure + Image 3 usage bar) */
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+.quota-shell {
+  max-width: 1420px;
+  margin: 24px auto;
+  padding: 0 24px 56px;
+  gap: 18px;
+}
+
+.ofm_pagetitle h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 760;
+  letter-spacing: -.5px;
+  line-height: 1.25;
+  color: var(--dsw-alias-label-primary);
+}
+
+.quota-actions,
+.quota-toolbar,
+.quota-summary-pills {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.quota-actions {
+  margin-left: auto;
+}
+
+.quota-actions a {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.quota-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .quota-toolbar select {
-  padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px;
-  font: inherit; max-width: 320px; background: var(--dsw-alias-bg-layer-2); color: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12px;
+  max-width: 280px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
 }
-.quota-account-section { margin-bottom: 24px; }
-.quota-account-title { display: flex; justify-content: space-between; gap: 12px; margin: 0 2px 12px; }
-.quota-account-title h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
-.quota-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; align-items: start; }
-.quota-pool {
-  border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; padding: 20px;
-  background: linear-gradient(150deg,var(--dsw-alias-bg-layer-1),var(--dsw-alias-bg-layer-2)); min-width: 0;
+
+.quota-empty-box {
+  padding: 28px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
 }
-.quota-pool h4 { margin: 0; font-size: 14px; font-weight: 650; }
-.quota-subtitle { margin: 5px 0 18px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
-.quota-percent { font-variant-numeric: tabular-nums; font-size: 32px; font-weight: 720; letter-spacing: -1px; }
-.quota-percent span { font-size: 15px; letter-spacing: 0; margin-left: 3px; }
-.quota-track { height: 10px; border-radius: 20px; overflow: hidden; margin: 12px 0 10px; background: var(--dsw-alias-bg-layer-3); }
-.quota-fill { height: 100%; border-radius: inherit; background: var(--dsw-alias-state-success-primary); transition: width .3s ease; }
-.quota-fill.warning { background: var(--dsw-alias-state-warning-primary,#dba231); }
-.quota-fill.low { background: var(--dsw-alias-state-error-primary); }
-.quota-pool details { margin-top: 18px; border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 12px; }
-.quota-pool summary { font-size: 12px; color: var(--dsw-alias-label-secondary); cursor: pointer; }
-.quota-models { display: flex; flex-direction: column; gap: 12px; padding-top: 15px; }
-.quota-model-head { display: flex; justify-content: space-between; align-items: start; gap: 10px; font-size: 12px; }
-.quota-model-head strong { font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.quota-model .quota-track { height: 5px; margin: 6px 0; }
-.quota-aliases { overflow-wrap: anywhere; font-size: 10px; color: var(--dsw-alias-label-tertiary); }
-.quota-model details { margin-top: 6px; padding-top: 0; border: none; }
-.quota-model summary { font-size: 10px; }
-.quota-small { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.7; }
-.quota-account-error { margin: 8px 0 12px; font-size: 12px; }
-a.ofm_creditbadge { text-decoration: none; cursor: pointer; }
-@media(max-width:950px) { .quota-grid { grid-template-columns: 1fr; } }
-@media(max-width:540px) { .quota-shell { margin-top: 14px; padding: 0 12px 32px; } .quota-toolbar select { max-width: 230px; } }
+
+/* ── Image 2 Style Account Pool Table ─────────────────────────────────── */
+.quota-table-wrapper {
+  overflow: auto;
+  max-inline-size: 100%;
+  container-type: inline-size;
+  border-radius: 18px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-shadow-lv2, 0 4px 12px rgb(0 0 0 / 5%));
+}
+
+.quota-table-wrapper:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.quota-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+}
+
+.quota-table thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+  background: var(--dsw-alias-bg-module-platform, #f5f6f7);
+}
+
+.quota-table thead th {
+  padding: 13px 14px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  white-space: nowrap;
+}
+
+.quota-table tbody tr {
+  transition: background .15s ease, opacity .15s ease;
+}
+
+.quota-table tbody tr:hover {
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 60%, var(--dsw-alias-interactive-bg-hover));
+}
+
+.quota-table tbody tr.row-paused {
+  opacity: .72;
+}
+
+.quota-table tbody th,
+.quota-table tbody td {
+  padding: 16px 14px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.quota-table tbody tr:last-child th,
+.quota-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.col-id {
+  min-width: 170px;
+  max-width: 240px;
+  font-weight: 500;
+}
+
+.acct-id-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.acct-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-module-platform, #f5f6f7);
+  border: 1px solid var(--dsw-alias-border-l2);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--dsw-alias-label-secondary);
+  flex-shrink: 0;
+}
+
+.acct-id-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+/* ── Column: 平台 / 类型 (Image 2 Badges) ─────────────────────────────── */
+.col-platform {
+  width: 210px;
+}
+
+.acct-platform-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.acct-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.acct-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.acct-chip.purple {
+  background: color-mix(in srgb, #7c3aed 13%, transparent);
+  color: #7c3aed;
+}
+
+body[data-ds-dark-theme] .acct-chip.purple {
+  background: color-mix(in srgb, #a78bfa 18%, transparent);
+  color: #c4b5fd;
+}
+
+.acct-chip.purple-outline {
+  background: color-mix(in srgb, #8b5cf6 9%, transparent);
+  color: #8b5cf6;
+}
+
+body[data-ds-dark-theme] .acct-chip.purple-outline {
+  color: #a78bfa;
+}
+
+.acct-chip.green {
+  background: color-mix(in srgb, #10b981 14%, transparent);
+  color: #059669;
+}
+
+body[data-ds-dark-theme] .acct-chip.green {
+  color: #34d399;
+}
+
+.acct-chip.green-outline {
+  background: color-mix(in srgb, #10b981 9%, transparent);
+  color: #059669;
+}
+
+body[data-ds-dark-theme] .acct-chip.green-outline {
+  color: #6ee7b7;
+}
+
+.acct-chip.blue,
+.acct-chip.blue-outline {
+  background: color-mix(in srgb, #3b82f6 13%, transparent);
+  color: #2563eb;
+}
+
+.acct-chip.tier-pro {
+  background: color-mix(in srgb, #8b5cf6 12%, transparent);
+  color: #6d28d9;
+}
+
+body[data-ds-dark-theme] .acct-chip.tier-pro {
+  color: #c4b5fd;
+}
+
+.acct-chip.shield-private {
+  background: color-mix(in srgb, #10b981 13%, transparent);
+  color: #059669;
+}
+
+body[data-ds-dark-theme] .acct-chip.shield-private {
+  color: #34d399;
+}
+
+.acct-subtext {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.acct-primary-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+/* ── Column: 接口配额池 · 当前用量 (Image 3 Usage Bar Card) ───────────── */
+.col-usage {
+  min-width: 520px;
+}
+
+.usage-pools-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(175px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.usage-card {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-module-platform, #f5f6f7);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.external-usage-card {
+  max-width: 380px;
+}
+
+.usage-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.usage-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.usage-pool-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+}
+
+.usage-info-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: 600;
+  flex: none;
+}
+
+.usage-card-metrics {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-used-label {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+}
+
+.usage-used-label.muted {
+  color: var(--dsw-alias-label-tertiary);
+  font-weight: 500;
+}
+
+.usage-remain-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+  white-space: nowrap;
+}
+
+/* Image 3 Capsule Progress Bar */
+.quota-track {
+  height: 9px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-1, #ffffff);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.quota-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--dsw-alias-label-primary, #111827);
+  transition: width .3s ease;
+}
+
+.quota-fill.warning {
+  background: var(--dsw-alias-state-warning-primary, #dba231);
+}
+
+.quota-fill.low {
+  background: var(--dsw-alias-state-error-primary, #dc2626);
+}
+
+.quota-fill.unknown {
+  background: transparent;
+}
+
+.usage-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.usage-reset-text,
+.usage-range-note {
+  white-space: nowrap;
+}
+
+.usage-details {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  padding-top: 6px;
+}
+
+.usage-details > summary {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.quota-models {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.quota-model {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+}
+
+.quota-model-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  margin-bottom: 5px;
+}
+
+.quota-model-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.quota-model-head strong {
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-model .quota-track {
+  height: 6px;
+  background: var(--dsw-alias-bg-module-platform, #ebeef2);
+}
+
+.quota-small {
+  margin-top: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10.5px;
+}
+
+.quota-alias-details {
+  margin-top: 4px;
+}
+
+.quota-alias-details > summary {
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.quota-aliases {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ── Columns: 容量 / 状态 / 调度 / 分组 (Image 2 Pills & Switch) ──────── */
+.col-capacity,
+.col-status,
+.col-schedule,
+.col-group {
+  white-space: nowrap;
+}
+
+.capacity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--dsw-alias-bg-module-platform, #f1f3f5);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.status-pill.ok {
+  background: color-mix(in srgb, #10b981 15%, transparent);
+  color: #059669;
+}
+
+body[data-ds-dark-theme] .status-pill.ok {
+  color: #34d399;
+}
+
+.status-pill.paused {
+  background: var(--dsw-alias-bg-module-platform, #ebeef2);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.status-pill.warn {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  color: #d97706;
+}
+
+.status-pill.err {
+  background: color-mix(in srgb, #ef4444 15%, transparent);
+  color: #dc2626;
+}
+
+/* Image 2 Green/Gray Toggle Switch */
+.schedule-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 40px;
+  height: 22px;
+  padding: 2px;
+  border-radius: 999px;
+  border: none;
+  background: #d1d5db;
+  cursor: pointer;
+  transition: background .2s ease, opacity .15s ease;
+}
+
+body[data-ds-dark-theme] .schedule-switch {
+  background: #4b5563;
+}
+
+.schedule-switch[aria-checked="true"] {
+  background: #10b981;
+}
+
+.schedule-switch i {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  transition: transform .22s cubic-bezier(.34, 1.3, .64, 1);
+}
+
+.schedule-switch[aria-checked="true"] i {
+  transform: translateX(18px);
+}
+
+.schedule-switch:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.schedule-switch:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.group-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.group-pill.gemini-group {
+  background: color-mix(in srgb, #a855f7 12%, transparent);
+  color: #9333ea;
+}
+
+body[data-ds-dark-theme] .group-pill.gemini-group {
+  color: #d8b4fe;
+}
+
+.group-pill.ext-group {
+  background: color-mix(in srgb, #10b981 12%, transparent);
+  color: #059669;
+}
+
+body[data-ds-dark-theme] .group-pill.ext-group {
+  color: #6ee7b7;
+}
+
+.quota-account-error {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+/* ── Responsive Container Queries (Stacked Card Fallback) ─────────────── */
+@container (width < 1100px) {
+  .usage-pools-grid {
+    grid-template-columns: 1fr;
+  }
+  .col-usage {
+    min-width: 280px;
+  }
+}
+
+@container (width < 760px) {
+  .quota-table,
+  .quota-table thead,
+  .quota-table tbody,
+  .quota-table tr,
+  .quota-table th,
+  .quota-table td {
+    display: block;
+  }
+
+  .quota-table thead {
+    display: none;
+  }
+
+  .quota-table tbody tr {
+    padding: 12px;
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+  }
+
+  .quota-table tbody th,
+  .quota-table tbody td {
+    padding: 8px 4px;
+    border: none;
+    width: auto;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 540px) {
+  .quota-shell {
+    margin-top: 14px;
+    padding: 0 12px 32px;
+  }
+  .quota-toolbar select {
+    max-width: 220px;
+  }
+}

@@ -672,7 +672,7 @@ function createChannelsPage(env) {
                     if (balance === null || !Number.isFinite(balance.total)) return h('span', { className: 'ofm_balanceerror' },
                       balanceError ? t('chan.credits.failed').replace('{reason}', balanceError)
                         : result?.error || t('chan.credits.unavailable'))
-                    if (creditCapability.quota) return h('a', { className: 'ofm_creditbadge strong', href: '/quota?account=' + encodeURIComponent(row.id), target: '_blank', rel: 'noopener', title: '查看三个独立配额池' }, '查看配额 · 三个池');
+                    if (creditCapability.quota) return h('a', { className: 'ofm_creditbadge strong', href: '/quota?account=' + encodeURIComponent(row.id), target: '_blank', title: '查看三个独立配额池' }, '查看配额 · 三个池');
                     const reading = creditCapability.quota
                       ? (balance.packages ?? []).map(pkg => `${pkg.name} ${pkg.remaining}%`).join(' · ') || '—'
                       : kilo(balance.total)

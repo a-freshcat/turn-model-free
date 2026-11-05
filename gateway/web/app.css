@@ -16,12 +16,95 @@
   outline: 2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent);
   outline-offset: 2px;
 }
+
+/* Unified right-sidebar button system (matches #controls button across all actions) */
+#controls button,
+#controls a.side-action-btn,
+.demo-side .side-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-block-size: 32px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, #d6d9de);
+  background: var(--dsw-alias-bg-layer-2, #fbfbfc);
+  color: var(--dsw-alias-label-primary, #14171c);
+  text-decoration: none;
+  text-align: center;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color .16s ease, background .16s ease, color .16s ease, transform .12s ease;
+}
+
+#controls .endpoint-line button {
+  width: auto;
+  min-block-size: 28px;
+  padding: 4px 10px;
+  flex: none;
+}
+
+#controls button:hover:not(:disabled),
+#controls a.side-action-btn:hover,
+.demo-side .side-action-btn:hover:not(:disabled) {
+  border-color: var(--dsw-alias-state-business-primary, #3d7dff);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3d7dff) 6%, var(--dsw-alias-bg-layer-2, #fbfbfc));
+  color: var(--dsw-alias-label-primary, #14171c);
+  text-decoration: none;
+}
+
+#controls button:active:not(:disabled),
+#controls a.side-action-btn:active,
+.demo-side .side-action-btn:active:not(:disabled) {
+  transform: scale(.985);
+}
+
+#controls button:focus-visible,
+#controls a.side-action-btn:focus-visible,
+.demo-side .side-action-btn:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary, #3d7dff);
+  outline-offset: 2px;
+}
+
+.demo-side .side-action-btn.primary {
+  font-weight: 600;
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3d7dff) 48%, var(--dsw-alias-border-l2, #d6d9de));
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3d7dff) 10%, var(--dsw-alias-bg-layer-2, #fbfbfc));
+}
+
+.demo-side .side-action-btn.primary:hover:not(:disabled) {
+  border-color: var(--dsw-alias-state-business-primary, #3d7dff);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3d7dff) 16%, var(--dsw-alias-bg-layer-2, #fbfbfc));
+}
+
+.guard-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.guard-actions .side-action-btn,
+.guard-actions .ofm_btn {
+  width: 100%;
+}
+
+.guard-actions button:disabled,
+.demo-side .side-action-btn:disabled {
+  opacity: .45;
+  cursor: default;
+  transform: none;
+}
+
 .connect-shell { max-width: 680px; margin: 40px auto; padding: 0 20px 40px; }
 .connect-shell .ofm_hero { overflow: visible; }
 .demo-note a { color: var(--dsw-alias-state-business-primary); text-decoration: none; }
 .demo-note a:hover { text-decoration: underline; }
 .ofm_scrim { z-index: 2000; }
-.guard-actions .ofm_btn:disabled { opacity: .5; cursor: default; }
 a.ofm_creditbadge { text-decoration: none; cursor: pointer; }
 #chat-output { min-height: 72px; max-height: 320px; }
 @media (max-width: 540px) {

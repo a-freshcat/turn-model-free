@@ -94,7 +94,10 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
                 headers={} if origin is None else {"Origin": origin})
             self.assertEqual(response.status_code, 401)
         response = await self.rpc("account.list", {"provider": "buddy"})
-        self.assertEqual(response.json()["value"]["accounts"][0]["id"], "primary")
+        accounts = response.json()["value"]["accounts"]
+        # 插件里的账号会排在本机账号前面（见 test_plugin_accounts.py），
+        # 所以这里按 id 查找，不假设顺序。
+        self.assertIn("primary", [row["id"] for row in accounts])
         self.assertNotIn("upstream-test-only", response.text)
         self.assertNotIn("endpoint", response.text)
         self.assertNotIn("token", response.text.lower())

@@ -1,104 +1,322 @@
-# free-m-clone 本机网关
+# 本机 OpenAI Chat 网关
 
-Python 3.10+ / FastAPI / Uvicorn / httpx。保留原渠道页面风格，提供账号池、Antigravity Google OAuth、OpenAI Chat Completions 与独立配额看板。
+Python 3.10+、FastAPI、Uvicorn、httpx 异步实现。支持离线模拟号池、OpenAI 兼容上游，以及 Antigravity Google OAuth 和原生请求驱动。保留 free-m-clone 原界面风格。
 
-## 安装与启动
+## 1. 来源与接入范围
 
-在仓库根目录打开终端，先安装一次依赖：
+已检查 [a-freshcat/free-m-clone](https://github.com/a-freshcat/free-m-clone)，参考树版本为
+`03729233d039fff44ca34cf1c7cddb355c392099`：
 
-```powershell
-python -m venv gateway/.venv
-gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
-.\launch-web.cmd
+- [README](https://github.com/a-freshcat/free-m-clone/blob/03729233d039fff44ca34cf1c7cddb355c392099/README.md)
+  明确说明登录、余额等使用模拟渠道包；仓库没有可直接使用的真实渠道登录和网络驱动。
+- [pipeline.mjs](https://github.com/a-freshcat/free-m-clone/blob/03729233d039fff44ca34cf1c7cddb355c392099/src/guard/pipeline.mjs)
+  的发送函数由调用者注入。本项目另行实现 Antigravity 驱动；腾讯真实渠道协议仍需独立提供。
+- [tencent-gate.js](https://github.com/a-freshcat/free-m-clone/blob/03729233d039fff44ca34cf1c7cddb355c392099/src/guard/tencent-gate.js)
+  的内置规则用 Python 重新实现于 `tencent_guard.py`。处理 system/assistant，保留 user/tool、
+  工具关联字段和识别到的路径；干净文本保持原样。
+- 原仓库未给出可核实的真实请求头/UA、凭据刷新及渠道请求体协议。这些值由部署配置或后续真实驱动提供。
+  默认 UA 为本服务自己的 `local-chat-gateway/1`。
+
+当前 `openai` 驱动实际支持**已兼容 OpenAI Chat Completions 的上游**；
+`demo` 驱动完全不联网。`antigravity` 驱动使用 Google OAuth、账号模型目录和原生生成接口，复用同一路由和号池。
+
+Antigravity 候选项目、稳定性证据及尚未实测的边界见
+[源码与文档对比记录](docs/research/2026-11-05-antigravity-stability.md)。
+
+## 2. 完整项目目录
+
+```text
+.
+├── account_manager.py        # 轮询、租约、并发上限、冷却、重试
+├── upstream_client.py        # send_upstream_request、HTTP、SSE、错误分类
+├── main.py                   # FastAPI、鉴权、OpenAI 错误响应、断开清理
+├── web_api.py                # 原页面 RPC 适配、账号导入、管理会话与原子保存
+├── antigravity_auth.py       # Google PKCE OAuth、续期、模型/配额发现
+├── antigravity_driver.py     # 原生生成协议与 OpenAI JSON/SSE 转换
+├── antigravity_defaults.json # 公开桌面 OAuth 应用标识，可由环境变量覆盖
+├── credential_store.py      # Windows DPAPI 凭据存储
+├── config.py                 # 配置与凭据校验
+├── tencent_guard.py          # 分档提示词规则与路径保护
+├── demo_upstream.py          # 模拟上游与渐进 SSE
+├── accounts.example.json     # 真实配置样例
+├── accounts.demo.json        # 可直接运行的模拟号池
+├── accounts.json             # 部署时创建，Git 忽略
+├── requirements.txt          # 可安装依赖范围
+├── requirements.lock         # 本次 Windows/Python 3.14 验证版本
+├── run.ps1                   # Windows 启动入口
+├── launch-web.cmd            # 双击启动并打开原风格渠道页面
+├── launch_web.py             # 就绪检测、浏览器打开与本机端口检查
+├── web/
+│   ├── index.html            # 本地渠道管理页
+│   ├── app.mjs               # 原页面与网关的连接层
+│   ├── app.css               # 宿主外壳与导入表单样式
+│   ├── quota.html            # 独立三个池配额看板
+│   ├── quota.mjs             # 账号筛选、刷新、状态条和型号折叠
+│   ├── quota-models.mjs      # 三个池分组与同名别名合并
+│   ├── quota.css             # 沿用原设计令牌的看板样式
+│   ├── channel-runtime.js    # 保留原组件，仅替换 Gemini 渠道元数据
+│   └── vendor/free-m-clone/  # 本地参考源码原件与哈希清单
+├── scripts/build_ui.py       # 从原件生成运行包
+├── examples/
+│   ├── chat.json
+│   └── stream.json
+├── tests/
+│   ├── test_gateway.py       # 离线 ASGI/号池/HTTP 驱动集成测试
+│   └── smoke_http.py         # 临时启动 Uvicorn，实际 HTTP/SSE/curl 测试
+├── task-reports/
+│   └── 2026-11-05-local-api-gateway.md
+├── NOTICE.md
+└── README.md
 ```
 
-启动后自动打开 `http://127.0.0.1:8000/`。更换端口：`launch-web.cmd --port 8001`。
-在 macOS/Linux 中从 gateway 目录安装虚拟环境并运行 `.venv/bin/python launch_web.py`。
+## 3. 本机启动（PowerShell）
 
-无 accounts.json 时使用离线演示号池；在 Antigravity 卡片添加并完成 Google 授权后，自动保存真实配置。已有配置时下次启动直接加载。
-授权回调使用当前端口的 localhost 地址，含一次性 state 与 PKCE S256。首次尚无项目的账号需先在官方客户端完成初始化。
-管理页连接与 Google 登录独立，模型和配额取自账号目录，不伪造登录或型号。
+也可以直接双击 `launch-web.cmd`：已有 accounts.json 时加载真实配置，否则启动模拟号池，等本机服务就绪后打开
+`http://127.0.0.1:8000/`，显示与本地 free-m-clone 相同的渠道卡、图标、折叠列表和昼夜风格。
+启动器通过一次性入口自动建立管理会话；直接访问地址时，可输入启动窗口显示的网关密钥。
+原件位于 `C:\Users\handsomeboys\Documents\deepseek-harness\repair_question\free-m-clone`，
+8 个复用文件按原字节保存在 web/vendor/free-m-clone，哈希清单见其 provenance.json。
 
-## 13 家渠道的登录
+点击「WorkBuddy 国内版 → 账号」可以看到两个演示账号，其他渠道按各自配置列出；
+演示账号不是已登录的真实厂商账号。右侧可测试同一个流式网关。
+Gemini 卡片已替换为 Antigravity，保持原卡片样式。点击「添加」生成 Google 授权链接，
+在浏览器完成授权后回到本机回调；后端校验 state、交换令牌并保存账号。
+本机管理页会话与 Google 登录独立；页面不会把连接本机误显示成 Google 已登录。
+其他渠道的添加按钮可导入已有 OpenAI 兼容上游配置。
 
-| 渠道 | 登录方式 |
-|---|---|
-| Antigravity | 本网关自己的 Google OAuth（PKCE + S256），凭据存 `.gateway-auth/` |
-| 其余 12 家 | 委托本机已安装的 `dsh-our-free-model` 插件 `channel-pack`，登录页落在各厂商域名 |
+未设置 GATEWAY_API_KEY 时每次启动随机生成；关闭窗口/按 Ctrl+C 停止服务。
+`/docs` 仍可从侧栏打开，供查看标准 API 文档。
 
-12 家走 Node 子进程桥（`scripts/pack_bridge.mjs`）：网关发一行 JSON，桥调插件自己的
-RPC，原样返回。插件装在用户目录下，**桥只读它、不改任何文件**；裸包名
-`@deepseek-ai/*` 由 `scripts/pack_loader.mjs` 的 ESM 解析钩子指向宿主实现。
+```cmd
+launch-web.cmd
+launch-web.cmd --port 8001
+launch-web.cmd --real
+```
 
-前提与默认路径：
+`--real` 使用 accounts.json，或环境变量 GATEWAY_ACCOUNTS 指定的真实配置；
+尚无真实配置时直接默认启动，在 Antigravity 卡片完成首次授权即可自动保存 accounts.json、切换到真实号池。
+端口被占用时会显示错误，不会打开其他程序的网页。
+浏览器无法自动打开时仍可手动访问控制台显示的 URL。`--no-browser` 可仅启动服务。
+启动器不会自动安装依赖；当前工作区已有 .vendor，新机器按下方步骤安装。
 
-- Node 运行时（`node` 在 PATH 上）。
-- 插件位于 `~/.dsh/profiles/desktop/node_modules/dsh-our-free-model`，
-  可用 `DSH_PACK_HOME` 覆盖。
-- 宿主的 `@deepseek-ai/*` 默认取 `D:/ai_ds/resources/app/dsh/node_modules`，
-  可用 `DSH_NODE_MODULES` 覆盖。
+新机器通常使用虚拟环境：
 
-缺失时网关照常启动，只有这 12 家的「添加账号」会报出具体原因，不会静默退回导入页。
-已有兼容上游配置仍可通过 `account.importWindow` 打开导入页添加。
+```powershell
+cd C:\Users\handsomeboys\Documents\ChatGPT\plugin_antigravity
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:GATEWAY_API_KEY = "local-development-key"
+.\run.ps1 -Demo
+```
 
-部分厂商（MiniMax、Cline）从部分网络直连会握手失败。桥会先用
-`GATEWAY_UPSTREAM_PROXY`，其次 `HTTPS_PROXY`/`HTTP_PROXY`，再回落到 Windows
-系统代理；回环地址始终绕过代理，因为 Loomy / Raccoon 的登录页由插件起在本机。
+**当前工作区已在 `.vendor` 安装并验证依赖**，可以跳过安装：
 
-## 号池与凭据
+```powershell
+$env:GATEWAY_API_KEY = "local-development-key"
+.\run.ps1 -Demo
+```
 
-轮询调度、单号并发限制、默认 600 秒冷却；默认初次请求加最多 3 次重试，同一请求不重复使用失败账号。
-全部适用账号不可用返回 503，仍有健康号但重试预算耗尽返回 502。
-SSE 首个有效输出前允许切号，输出后失败发送错误帧，不重播答案、不发送成功 [DONE]。
+`run.ps1` 优先使用现有 `.vendor`，其次使用 `.venv`。停止按 Ctrl+C。
+若本机策略禁止执行本地 PowerShell 脚本，直接运行：
 
-accounts.json 示例见 accounts.example.json；token/cookie 可从环境变量读取。
-Antigravity 令牌只保存到 `.gateway-auth/`，配置仅含 credential_id 引用；Windows 当前用户 DPAPI 加密，POSIX 仅限制目录/文件权限。
-Windows 凭据不能直接复制给其他电脑或系统用户。令牌临近到期自动续期，撤销授权会要求重新登录。
-这些私有文件、依赖和本机缓存均不包含在本版本中。
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) ".vendor")
+$env:GATEWAY_ACCOUNTS = (Join-Path (Get-Location) "accounts.demo.json")
+$env:GATEWAY_API_KEY = "local-development-key"
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+```
 
-可选环境变量：`GATEWAY_API_KEY`、`GATEWAY_ACCOUNTS`、`GATEWAY_UPSTREAM_PROXY`、`ANTIGRAVITY_CLIENT_ID`、`ANTIGRAVITY_CLIENT_SECRET`、`ANTIGRAVITY_USER_AGENT`。
-默认仅监听 loopback，保持 TLS 校验。管理写操作校验同源，API 使用 Bearer 网关密钥；启动窗口会显示随机生成的密钥。
+虚拟环境中无需 PYTHONPATH，把 python 换成对应环境解释器即可。
+示例密钥仅用于本机测试；对外部署时自行设置随机网关密钥。
 
-## 三个配额池
+模拟账号 `demo-blocked` 会返回 11128：非流式返回 HTTP 400；
+流式先发角色元数据再发错误事件。网关冷却后切到 `demo-healthy`。
+演示 usage 为 0，是占位计数。
 
-从侧栏「配额看板 · 三个池」或账号「查看配额」打开 `/quota`：
+## 4. curl 测试
 
-1. Gemini 4 Argon 独立池。
-2. Claude / GPT 共用池。
-3. 其余 Gemini / 内部型号共用池。
+另开 PowerShell 进入项目目录。Windows 使用 `curl.exe`，避免旧版 PowerShell 同名别名：
 
-按账号分别显示百分比和进度条，明细默认折叠、重复别名合并。不跨池累计或平均；池内值不一致时取最低已知值并显示范围，未知值不显示为 0%。
-打开看板读取本机缓存，点击刷新才查询上游。渠道与聊天列表默认折叠第三池，仍可展开选择所有已启用型号。
+```powershell
+curl.exe --noproxy "*" --fail-with-body --max-time 15 http://127.0.0.1:8000/healthz
 
-## OpenAI 兼容接口
+curl.exe --noproxy "*" --fail-with-body --max-time 30 http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer local-development-key" -H "Content-Type: application/json" --data-binary "@examples/chat.json"
 
-`POST /v1/chat/completions`、`GET /v1/models`，支持 JSON 和 SSE。`/docs` 提供交互文档。
+curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer local-development-key" -H "Content-Type: application/json" --data-binary "@examples/stream.json"
+
+curl.exe --noproxy "*" --fail-with-body --max-time 15 http://127.0.0.1:8000/admin/accounts -H "Authorization: Bearer local-development-key"
+```
+
+非流式返回 `chat.completion`；流式返回 `text/event-stream`，包含
+`chat.completion.chunk`、可选 usage 帧，成功以 `data: [DONE]` 结束。
+`/admin/accounts` 只返回状态、失败次数、占用槽位、剩余冷却时间，不公开凭据。
+
+Linux/macOS：
 
 ```bash
-curl -N http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Authorization: Bearer YOUR_GATEWAY_KEY' \
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+GATEWAY_API_KEY=local-development-key GATEWAY_ACCOUNTS=accounts.demo.json \
+  .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+
+curl --noproxy '*' --fail-with-body --max-time 30 -N \
+  http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Authorization: Bearer local-development-key' \
   -H 'Content-Type: application/json' \
-  --data-binary '{"model":"demo-chat","messages":[{"role":"user","content":"你好"}],"stream":true}'
+  --data-binary @examples/stream.json
 ```
 
-Windows 使用 `curl.exe`；Antigravity 的 model 请从 `/v1/models` 读取真实别名。
-原生驱动支持文本、基础工具历史/签名及内联 base64 图片转换；具体模型参数受上游限制。无效或不支持的输入返回 400。
+## 5. accounts.json 示例与真实号池
 
-## 验证与边界
+`accounts.example.json` 可以复制为 `accounts.json`。以下是两个账号的结构示例：
+
+```json
+{
+  "cooldown_seconds": 600,
+  "max_retries": 3,
+  "pool_wait_seconds": 1,
+  "first_output_timeout_seconds": 30,
+  "stream_timeout_seconds": 300,
+  "accounts": [
+    {
+      "id": "account-01",
+      "driver": "openai",
+      "endpoint": "https://provider.example/v1/chat/completions",
+      "models": {"local-chat": "provider-model-id"},
+      "token_env": "UPSTREAM_PRIMARY_TOKEN",
+      "status": "active",
+      "fail_count": 0,
+      "max_concurrency": 1,
+      "tencent_prompt_level": 0
+    },
+    {
+      "id": "account-02",
+      "driver": "openai",
+      "endpoint": "https://provider.example/v1/chat/completions",
+      "models": {"local-chat": "provider-model-id"},
+      "cookie_env": "UPSTREAM_SECONDARY_COOKIE",
+      "status": "active",
+      "fail_count": 0,
+      "max_concurrency": 1,
+      "device_headers": {"X-Device-Id": "replace-with-your-issued-device-id"},
+      "tencent_prompt_level": 0
+    }
+  ]
+}
+```
+
+URL、模型 ID、设备 ID 都是占位值，不能直接连接真实服务。
+模型映射的 key 是客户端使用的别名，value 是上游模型 ID。每个可承接该别名的账号都应配置映射。
+
+- `token_env` 生成 `Authorization: Bearer ...`，`cookie_env` 生成 `Cookie: ...`。
+  也可使用明文 `token` / `cookie`，同一项不能同时配置明文和环境变量。
+- `device_headers` 保存账号独立设备参数；`user_agent` 保存真实渠道要求的 UA。
+  这些字段不会自动生成或刷新。签名、token 刷新等应在真实驱动内实现。
+- 不要把密钥放入 endpoint 查询参数。凭据应留在本机环境变量或私有配置文件。
+- 只有确实需要这套提示词规则的渠道才设置 `tencent_prompt_level` 为 1、2、3，其他保持 0。
+- 本实现遇到 11128 立即冷却、换号，不在同号上逐档重发；每次尝试从原始消息重建。
+- HTTP 客户端按账号隔离 Cookie jar、连接池；关闭重定向和环境代理，保持 TLS 校验。
+  endpoint 仅支持 HTTPS 或 loopback HTTP。客户端请求体不能覆盖服务器端地址与凭据。
+- `channel` 指定页面分组（如 buddy、workbuddy、qoder、antigravity），默认 buddy；
+  `nickname` 是显示名称，`disabled_models` 是关闭的对外模型别名。分组本身不证明该渠道已完成 OAuth。
+
+启动真实号池：
 
 ```powershell
-cd gateway
-.venv/Scripts/python.exe -m unittest discover -s tests -v
-node tests/quota-models.test.mjs
-.venv/Scripts/python.exe tests/smoke_http.py
+Copy-Item -LiteralPath accounts.example.json -Destination accounts.json
+# 编辑 accounts.json，替换 URL / 模型映射，再设置凭据。
+$env:UPSTREAM_PRIMARY_TOKEN = "<你的上游 token>"
+$env:GATEWAY_API_KEY = "<你的网关随机密钥>"
+$env:GATEWAY_ACCOUNTS = (Join-Path (Get-Location) "accounts.json")
+.\run.ps1
 ```
 
-103 项 Python 测试（含 12 项子测试）、配额分组测试和本机 HTTP/SSE/curl 冒烟测试已通过。
-其中 14 项起真实 Node 子进程、对 12 家厂商逐一取登录地址，断言落在厂商域名且不是导入页。
-Google HTTP 在测试中被模拟；不据此声称真实模型生成、完整工具/多模态兼容性或长期稳定性已验证。
-当前单进程一个 worker，健康状态在进程内。多主机使用独立账号池；相同账号跨实例共享需要另加 Redis 等租约和全局并发状态。
-反代须关闭 SSE 缓冲和 POST 自动重试。
+文件中的第二个账号默认 disabled，启用前设置对应 cookie；不用时可删除。
+两个账号都 active 时，要分别设置凭据。真实测试请求的 model 改为 `local-chat`。
+真实渠道不是 OpenAI 协议时，需要先实现下一节驱动，不能仅替换 URL。
 
-协议与许可来源见 [NOTICE.md](NOTICE.md)。
+## 6. 调度、重试与流式边界
 
-仓库原演示项目回归为 78/79；唯一失败项是本机已安装插件升级后与原来源快照的 client.js 哈希不同。原功能与旧快照保留，详细结果见根目录 CHANGELOG。
+1. 锁内轮询并原子占用账号槽位；网络 I/O 不持锁。租约覆盖整个响应，完成、失败或客户端断开后关闭连接并释放。
+2. 非 2xx、网络错误、首个有效输出超时、协议错误和结构化 11128 都进入冷却。
+   普通 4xx 也按本任务要求重试，因此错误参数可能冷却多个账号；后续可按上游契约细分参数错误。
+3. 默认冷却 600 秒；有效 Retry-After 可延长冷却，最长按 86400 秒处理。
+   到期后在下次调度/状态查询时恢复 active，disabled 不自动恢复。
+4. `max_retries=3` 表示初次 + 最多 3 次重试，共最多 4 次；需要总共 3 次时设置为 2。
+   同一请求不会重复使用已经尝试过的账号。
+5. 全部适用账号冷却/disabled，或槽位在有界等待后仍满时返回 **503**；可计算冷却时间时附 Retry-After。
+   若仍有健康账号但耗尽重试预算则返回 **502**。未配置模型 404，输入错误 400，网关鉴权错误 401。
+6. SSE 角色/空 delta 先暂存，遇到正文、工具调用、refusal 或结束原因才提交 HTTP 200；
+   前置错误可以无感切号。输出提交后再发生错误，发送 error 结构的 SSE 帧并结束，不发成功 [DONE]，不重播答案。
+   此时 HTTP 状态已经是 200，客户端必须识别错误帧或截断。
+7. 支持拆包、UTF-8、BOM、CRLF/CR/LF、多行 data、注释、工具参数增量、usage、[DONE]。
+   单个 SSE 事件最大 1 MiB，JSON 响应最大 8 MiB；仅元数据开头有数量与大小上限。
+8. 上游标准字段及 JSON 扩展参数透传，保留工具调用关联信息、usage、logprobs 等。
+   具体 tools/多模态/音频能力仍由上游决定。本项目实现 Chat Completions 与模型列表，不包含 Responses 等其他 API。
+
+`accounts.json` 是启动配置。真实模式下，页面的账号添加/移除/启停及模型开关通过原子替换保存到该配置，
+同时更新当前号池；磁盘写入失败时不更新运行状态。正在处理请求的账号不能移除。
+演示模式的修改只在本次进程生效，不改写示例配置。
+健康状态仍在进程内，fail_count 为本次运行累计失败次数；重启会丢失运行时冷却记录。
+配置里的 cooldown 会重新等待一个完整周期。手工编辑文件仍需要重启。
+`/healthz` 只证明进程存活，不代表真实上游可用；池状态可查看 `/admin/accounts`。
+
+管理页面使用 HttpOnly、SameSite=Strict 会话 cookie；写操作校验同源。
+UI 状态接口不返回账号 token、cookie 或设备头。兼容 API 仍要求 Bearer 密钥，不接受页面 cookie。
+Antigravity 刷新会在需要时续期令牌并查询模型/配额；其他未接入真实驱动的签到和配额仍显示为未接入。
+
+## 7. Antigravity 登录、模型与三个配额池
+
+1. 启动后进入 Antigravity → 添加，在浏览器完成 Google 授权。回调为当前端口的
+   `http://localhost:<端口>/oauth-callback`，使用一次性 state 和 PKCE S256，授权窗口有效期 10 分钟。
+2. 后端查询账号项目和模型目录；模型来自账号返回的数据，不硬编码上面展示的型号。
+   如果授权成功但目录查询失败，保留有效登录并显示说明，稍后点刷新；不捏造模型和配额。
+   首次使用、尚无项目的账号需要先在官方客户端完成初始化。
+3. accounts.json 只保存 credential_id 引用。用户令牌在 `.gateway-auth/`；Windows 使用当前用户 DPAPI 加密，
+   不能直接复制给另一台电脑或 Windows 用户使用。POSIX 回退为私有目录/文件权限，并非加密。
+4. 令牌临近到期时按账号加锁续期，支持 refresh token 轮换；授权撤销时停用账号、提示重新登录。
+   配额/状态接口不返回令牌，OAuth 回调查询串在访问日志前移除。
+5. 如需显式代理，设置 `GATEWAY_UPSTREAM_PROXY=http://127.0.0.1:8080`；默认不读取系统代理环境变量，保持 TLS 校验。
+   `ANTIGRAVITY_CLIENT_ID`、`ANTIGRAVITY_CLIENT_SECRET`、`ANTIGRAVITY_USER_AGENT` 可覆盖公开客户端默认配置。
+
+渠道页点击「查看配额 · 三个池」或侧栏「配额看板」进入 `/quota`。按用户确认的规则，每个账号固定分为：
+
+| 配额池 | 包含型号 |
+| --- | --- |
+| Gemini 4 Argon | Argon 的各档型号 |
+| Claude / GPT | Claude 与 GPT 共用 |
+| 其他 Gemini / 内部型号 | 其余所有 Gemini 和内部型号共用 |
+
+三个池分别显示百分比/状态条，不跨池相加或平均。池内返回值不一致时使用最低已知值，显示范围；未知值显示「未知」。
+型号明细默认折叠；同名、同配额、同重置时间的别名合并展示，仍可展开查看 ID。
+渠道模型列表和聊天选项默认折叠第三池，点击「其他 Gemini/内部型号」可显示全部；模型接口仍保留已启用的真实型号。
+打开看板读取本机缓存，点「刷新配额」才主动查询上游。
+
+`upstream_client.send_upstream_request` 分派到 `antigravity_driver.send_native`，支持文本、基础工具调用、
+内联 base64 图片和 JSON/SSE 转换。多模态、工具签名与各模型参数最终受上游限制；不支持的输入返回 400。
+401 在输出前允许一次令牌刷新；其他故障由号池冷却/换号。已输出内容后失败不重播答案。
+当前通过模拟 Google HTTP 的协议测试；尚未完成真实 Google 模型生成与长期稳定性测试。
+
+## 8. 测试与多主机部署
+
+当前工作区：
+
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) ".vendor")
+python -m unittest discover -s tests -v
+node tests/quota-models.test.mjs
+python tests/smoke_http.py
+```
+
+虚拟环境中使用对应解释器，不设置 .vendor 的 PYTHONPATH。
+第二条测试临时监听 127.0.0.1 随机端口，使用随机测试密钥，测试后自动关闭；
+还会调用已安装的 curl。限制本地 socket 的沙箱需要允许本地 socket 才能运行异步事件循环。
+
+单实例使用 **一个 worker**；进程内锁不能对多个 worker 共享号池实施全局并发限制。
+每台主机独立运行本项目、分配不同账号，前面挂支持 SSE 的反代即可。
+反代应关闭响应缓冲与自动重试 POST，提供足够的上游读取超时，避免重试叠加与答案重复。
+默认只绑定 loopback；跨主机时显式配置监听地址，并由反代提供 TLS、请求体大小限制、入口限流。
+
+需要多个实例共享相同账号时，再迁移到 Redis 等共享存储，增加有期限的原子租约、
+续租、全局并发计数与持久化。当前没有跨主机共享状态。
+真实渠道权限、长期稳定性与实际吞吐尚未验证；当前验证范围为本地模拟上游及协议链路。
