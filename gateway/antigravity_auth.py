@@ -19,6 +19,7 @@ import anyio
 import httpx
 
 from credential_store import CredentialStore
+from native_history import ToolSignatureCache
 
 ROOT = Path(__file__).resolve().parent
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -81,6 +82,7 @@ class OAuthCallbackRedaction:
 
 class AntigravityAuth:
     def __init__(self, root: Path):
+        self.tool_signatures=ToolSignatureCache()
         defaults = json.loads((ROOT / "antigravity_defaults.json").read_text())
         self.client_id = os.environ.get("ANTIGRAVITY_CLIENT_ID") or defaults["client_id"]
         self.client_secret = os.environ.get("ANTIGRAVITY_CLIENT_SECRET") or defaults["client_secret"]

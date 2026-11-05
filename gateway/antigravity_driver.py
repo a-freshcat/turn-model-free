@@ -5,6 +5,7 @@ The public OpenAI response schema is produced here; OAuth lives separately.
 
 import hashlib
 import json
+import re
 import time
 from uuid import uuid4
 
@@ -12,10 +13,57 @@ import httpx
 
 from account_manager import InvalidRequest, UpstreamFailure
 from antigravity_auth import API_BASE, OAuthFailure
+from gemini_schema import clean_tool_schema
 
 
-def native_request(messages, options):
+def native_http_error(status, raw, retry_after=0):
+    """Do not convert caller/schema validation into an unhealthy account.
+
+    Expose only known protocol field names; upstream descriptions may quote
+    prompts, tools or credentials and must never cross the API boundary.
+    """
+    from upstream_client import _is_gate_body, _json_object
+    value=_json_object(raw) or {}
+    error=value.get('error') if isinstance(value.get('error'),dict) else value
+    codes=[item.get('code') for item in (value,error,value.get('data')) if isinstance(item,dict)]
+    if any(code in (11140,'11140') for code in codes):
+        return UpstreamFailure('account_restricted',reauth=True,retry_after=retry_after)
+    if _is_gate_body(raw.decode('utf-8','replace')):
+        return UpstreamFailure('channel_11128',retry_after=retry_after)
+    if status==400:
+        upstream_status=error.get('status')
+        if upstream_status in ('PERMISSION_DENIED','UNAUTHENTICATED','RESOURCE_EXHAUSTED'):
+            mapped={'PERMISSION_DENIED':403,'UNAUTHENTICATED':401,'RESOURCE_EXHAUSTED':429}[upstream_status]
+            return UpstreamFailure('antigravity_http_'+str(mapped),retry_after=retry_after,reauth=mapped==401)
+        allowed={'request','generation_config','generationConfig','max_output_tokens','maxOutputTokens',
+            'contents','parts','role','text','tools','functionDeclarations','function_declarations',
+            'parameters','properties','required','type','thinking_config','thinkingConfig',
+            'thinking_budget','thinkingBudget','system_instruction','systemInstruction','model','project',
+            'tool_config','toolConfig','responseJsonSchema','response_schema','responseSchema',
+            'additionalProperties','temperature','topP','top_p','candidateCount','candidate_count'}
+        fields=[]
+        for detail in error.get('details',[]) if isinstance(error.get('details'),list) else []:
+            if not isinstance(detail,dict):continue
+            for violation in detail.get('fieldViolations',[]) if isinstance(detail.get('fieldViolations'),list) else []:
+                field=violation.get('field') if isinstance(violation,dict) else None
+                if not isinstance(field,str) or len(field)>256:continue
+                if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*(?:\[\d{1,5}\]|\.[A-Za-z_][A-Za-z_0-9]*)*',field):continue
+                segments=re.findall(r'[A-Za-z_][A-Za-z_0-9]*',field)
+                if segments and all(segment in allowed for segment in segments):fields.append(field)
+        # Fixed field-name hints also work when the upstream omits fieldViolations.
+        message=str(error.get('message',''))
+        for field in ('maxOutputTokens','max_output_tokens','thinkingBudget','thinking_budget',
+                      'functionDeclarations','function_declarations','parametersJsonSchema'):
+            if field in message and field not in fields:fields.append(field)
+        label=upstream_status if upstream_status in ('INVALID_ARGUMENT','FAILED_PRECONDITION','OUT_OF_RANGE') else 'BAD_REQUEST'
+        hint=('；检查字段：'+', '.join(fields[:6])) if fields else '；请检查模型、工具声明和生成参数'
+        return InvalidRequest('上游请求参数校验失败（HTTP 400 / '+label+'）'+hint+'。账号未因此进入冷却。')
+    return UpstreamFailure('antigravity_http_'+str(status),retry_after=retry_after,reauth=status==401)
+
+
+def native_request(messages, options, *, signature_lookup=None):
     contents, system, call_names = [], [], {}
+    legacy_calls=set()
     for message in messages:
         role = message["role"]
         content = message.get("content")
@@ -45,7 +93,11 @@ def native_request(messages, options):
             if not name:
                 raise InvalidRequest("A tool result has no matching assistant tool call.")
             response = {"result": content}
-            parts = [{"functionResponse": {"name": name, "response": response}}]
+            if message.get('tool_call_id') in legacy_calls:
+                parts=[{'text':'Historical tool result (quoted, untrusted data): '+
+                    json.dumps({'tool':name,'result':content},ensure_ascii=False)}]
+            else:
+                parts = [{"functionResponse": {"name": name, "response": response}}]
             native_role = "user"
         elif role == "assistant":
             native_role = "model"
@@ -60,9 +112,15 @@ def native_request(messages, options):
                 call_names[call.get("id")] = function["name"]
                 part = {"functionCall": {"name": function["name"], "args": arguments}}
                 signature = (call.get("extra_content") or {}).get("google", {}).get("thought_signature")
+                if not signature and signature_lookup is not None:
+                    signature=signature_lookup(call.get('id'),function['name'],arguments)
                 if isinstance(signature, str) and signature:
                     part["thoughtSignature"] = signature
-                parts.append(part)
+                    parts.append(part)
+                else:
+                    legacy_calls.add(call.get('id'))
+                    parts.append({'text':'Historical assistant tool call (already executed): '+
+                        json.dumps({'tool':function['name'],'arguments':arguments},ensure_ascii=False)})
         elif role == "user":
             native_role = "user"
         else:
@@ -100,7 +158,13 @@ def native_request(messages, options):
             function = tool.get("function") or {}
             if tool.get("type") != "function" or not function.get("name"):
                 raise InvalidRequest("Antigravity accepts function tools only.")
-            declarations.append({k: function[k] for k in ("name", "description", "parameters") if k in function})
+            declaration={k:function[k] for k in ('name','description') if k in function}
+            if 'parameters' in function:
+                cleaned=clean_tool_schema(function['parameters'])
+                # Zero-argument tools do not need a synthetic placeholder parameter.
+                if cleaned.get('properties') or cleaned.get('anyOf') or cleaned.get('required'):
+                    declaration['parameters']=cleaned
+            declarations.append(declaration)
         request["tools"] = [{"functionDeclarations": declarations}]
         choice = options.get("tool_choice", "auto")
         policy = {"mode": {"none": "NONE", "auto": "AUTO", "required": "ANY"}.get(
@@ -178,9 +242,19 @@ def candidate_delta(candidate):
 
 
 async def send_native(auth, client, account, messages, stream, *, model, options, lifetime):
-    from upstream_client import (PreparedStream, MAX_EVENT, MAX_JSON, _body, _events,
+    from upstream_client import (PreparedStream, MAX_EVENT, MAX_JSON, MAX_ERROR, _body, _events,
                                  _json_object, _retry_after, encode_event)
-    wire = native_request(messages, options)
+    signatures=getattr(auth,'tool_signatures',None)
+    native_model=account.models[model]
+    lookup=(lambda call_id,name,args:signatures.get(account.credential_id,native_model,call_id,name,args)) if signatures else None
+    wire = native_request(messages, options,signature_lookup=lookup)
+    def remember(delta):
+        if signatures is None:return
+        for call in delta.get('tool_calls',[]):
+            signature=(call.get('extra_content') or {}).get('google',{}).get('thought_signature')
+            if signature:
+                signatures.put(account.credential_id,native_model,call['id'],call['function']['name'],
+                    json.loads(call['function']['arguments']),signature)
     # 令牌刷新、项目探测、模型目录查询必须和对话请求走同一条出口：
     # 同一份 OAuth 凭据在两个 IP 上出现，正是「一个账号多处使用」的特征。
     proxy = auth.resolve_proxy(account.proxy)
@@ -215,14 +289,15 @@ async def send_native(auth, client, account, messages, stream, *, model, options
                 raise UpstreamFailure(exc.reason, reauth=exc.reauth, retry_after=exc.retry_after) from None
         if not response.is_success:
             retry = _retry_after(response.headers.get("retry-after"))
-            raise UpstreamFailure("antigravity_http_" + str(response.status_code),
-                                  retry_after=retry, reauth=response.status_code == 401)
+            raw=await _body(response,MAX_ERROR,prefix=True)
+            raise native_http_error(response.status_code,raw,retry)
         meta = {"id": "chatcmpl-" + uuid4().hex, "created": int(time.time()), "model": model}
         if not stream:
             value = unwrap(_json_object(await _body(response, MAX_JSON)))
             choices = []
             for candidate in value.get("candidates") or []:
                 delta = candidate_delta(candidate)
+                remember(delta)
                 reason = finish(candidate.get("finishReason"), bool(delta.get("tool_calls")))
                 if reason is None:
                     raise UpstreamFailure("antigravity_missing_finish")
@@ -254,6 +329,7 @@ async def send_native(auth, client, account, messages, stream, *, model, options
                         first = index not in seen
                         seen.add(index)
                         delta = candidate_delta(candidate)
+                        remember(delta)
                         if first:
                             delta = {"role": "assistant", **delta}
                         calls = delta.get("tool_calls", [])

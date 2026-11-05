@@ -1,6 +1,6 @@
 # 本机 OpenAI Chat 网关
 
-当前使用入口见[仓库首页](../README.md)。v1.2.9 新增的暂停、限流和 AI 排查提醒见[调用保护说明](docs/protection.md)。
+当前使用入口见[仓库首页](../README.md)。v1.2.10 新增的暂停、限流和 AI 排查提醒见[调用保护说明](docs/protection.md)。
 
 Python 3.10+、FastAPI、Uvicorn、httpx 异步实现。支持离线模拟号池、OpenAI 兼容上游，以及 Antigravity Google OAuth 和原生请求驱动。保留 free-m-clone 原界面风格。
 

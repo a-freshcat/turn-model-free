@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。通过网页统一管理账号、查看额度、选择模型和测试流式对话。
 
-**当前版本：v1.2.9** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.2.10** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
 
 ## 功能
 
@@ -53,6 +53,8 @@ launch-web.cmd --no-browser
 **已有兼容上游**：使用导入入口，按 [accounts.example.json](gateway/accounts.example.json) 配置接口地址、凭据和模型映射。
 
 模型能力、签到和积分领取以渠道实际支持情况为准。连接本机管理页与完成厂商登录是独立状态。
+
+DSH 的工具声明和旧工具历史会自动做兼容转换；工具已执行后仍出现参数错误时，参见[工具历史兼容说明](gateway/docs/tool-compatibility.md)。
 
 ## 三个配额池
 
