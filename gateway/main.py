@@ -192,6 +192,8 @@ app.add_middleware(OAuthCallbackRedaction)
 app.add_middleware(ProtectionMiddleware)
 bearer = HTTPBearer(auto_error=False, scheme_name="GatewayBearer")
 app.include_router(web_router)
+from image_gateway import router as image_router
+app.include_router(image_router)
 # Windows registry MIME associations can otherwise label .mjs as text/plain.
 mimetypes.add_type("text/javascript", ".mjs")
 app.mount("/assets", StaticFiles(directory=ROOT / "web"), name="assets")

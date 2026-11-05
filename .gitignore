@@ -25,3 +25,5 @@ commit-msg*.txt
 
 # 发布暂存与打包含临时产物（由 .release/prepare_release.py 生成，不入库）
 .release/
+
+.gateway-images/

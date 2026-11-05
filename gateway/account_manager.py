@@ -187,8 +187,9 @@ class AccountManager:
         self, model: str, attempt: Callable[[Lease, AsyncExitStack], Awaitable[T]],
         lifetime: AsyncExitStack, *, timeout_seconds: float | None = None,
         timeout_reason: str = "first_output_timeout",
+        excluded_accounts: set[str] | None = None,
     ) -> T:
-        tried: set[str] = set()
+        tried: set[str] = set(excluded_accounts or ())
         last_failure = None
         for _ in range(self.settings.max_retries + 1):
             current = AsyncExitStack()
