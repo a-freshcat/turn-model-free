@@ -106,6 +106,7 @@ async function api(path, body, signal) {
   }
   return data
 }
+window.__GATEWAY_API__ = api
 const connection = {
   rpc: {
     async call(_scope, _plugin, request, signal) {
@@ -139,27 +140,6 @@ async function updateStatus() {
     ? '本机演示号池 · 修改仅在本次运行生效 · 账号状态来自当前网关'
     : '本机号池 · 账号配置保存在本机 · 统一 API 与渠道卡共享同一调度器'
   $('api-base').textContent = state.api_base
-  const details = state.model_details || {}
-  const listed = state.models.filter(model => showAllModels || details[model]?.pool !== 'gemini_shared')
-  const signature = JSON.stringify([listed, details, showAllModels])
-  if (signature !== modelSignature) {
-    const current = $('chat-model').value
-    const groups = [
-      ['argon','Gemini 4 Argon · 独立池'], ['claude_gpt','Claude / GPT · 独立池'],
-      ['gemini_shared','其他 Gemini / 内部型号 · 共享池'], [null,'其他渠道'],
-    ].map(([pool,label]) => {
-      const group = document.createElement('optgroup')
-      group.label = label
-      for (const model of listed.filter(model => (details[model]?.pool ?? null) === pool)) {
-        group.append(new Option(details[model]?.name || model, model))
-      }
-      return group
-    }).filter(group => group.children.length)
-    $('chat-model').replaceChildren(...groups)
-    if (listed.includes(current)) $('chat-model').value = current
-    $('model-more').textContent = showAllModels ? '只显示常用型号' : '显示其他 Gemini / 内部型号'
-    modelSignature = signature
-  }
   return state
 }
 async function loadImport() {
@@ -248,69 +228,7 @@ function addChatEvent(data) {
   if (data === '[DONE]') return
   const value = JSON.parse(data)
   if (value.error) throw new Error(value.error.message)
-  for (const choice of value.choices || []) {
-    const delta = choice.delta || {}
-    $('chat-output').textContent += delta.content || delta.refusal || ''
-    if (delta.tool_calls) $('chat-output').textContent += JSON.stringify(delta.tool_calls)
-  }
-  if ($('chat-output').textContent.length > 1024 * 1024) throw new Error('显示内容超过上限')
 }
-$('chat-form').addEventListener('submit', async event => {
-  event.preventDefault()
-  chatController = new AbortController()
-  $('chat-submit').disabled = true
-  $('chat-stop').disabled = false
-  $('chat-output').textContent = ''
-  try {
-    const response = await fetch('/ui/chat', {
-      method: 'POST', credentials: 'same-origin', signal: chatController.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: $('chat-model').value,
-        messages: [{ role: 'user', content: $('chat-message').value }], stream: true }),
-    })
-    if (!response.ok) {
-      const value = await response.json()
-      if (response.status === 401) requireLogin()
-      throw new Error(value.error?.message || '测试请求失败')
-    }
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let completed = false
-    try {
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        let boundary
-        while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-          const frame = buffer.slice(0, boundary)
-          buffer = buffer.slice(boundary + 2)
-          const data = frame.split('\n').filter(line => line.startsWith('data: ')).map(line => line.slice(6)).join('\n')
-          if (data === '[DONE]') completed = true
-          if (data) addChatEvent(data)
-        }
-      }
-      if (!completed) throw new Error('连接在完整结束前断开')
-    } finally {
-      await reader.cancel().catch(() => {})
-      reader.releaseLock()
-    }
-    if (!$('chat-output').textContent) $('chat-output').textContent = '请求已完成。'
-  } catch (error) {
-    $('chat-output').textContent += '\n' + (error.name === 'AbortError' ? '已停止' : '请求失败：' + error.message)
-  } finally {
-    $('chat-submit').disabled = false
-    $('chat-stop').disabled = true
-    chatController = undefined
-    if (connected) updateStatus().catch(() => {})
-  }
-})
-$('chat-stop').addEventListener('click', () => chatController?.abort())
-$('model-more').addEventListener('click', async () => {
-  showAllModels = !showAllModels
-  if (connected) await updateStatus()
-})
 
 // ── 侧边栏/主视图：渠道管理 vs 配额看板 SPA 切换 ──
 let currentView = 'channels'
@@ -334,7 +252,7 @@ async function switchView(targetView, targetAccount = '') {
     if (tabChannels) tabChannels.classList.remove('active')
     if (tabQuota) tabQuota.classList.add('active')
 
-    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa3')
+    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa4')
     if (targetAccount) {
       setQuotaAccount(targetAccount)
     }

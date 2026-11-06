@@ -69,13 +69,13 @@ function theme() {
 theme()
 
 async function api(path, body) {
-  const token = window.__GATEWAY_BOOTSTRAP__ || ''
-  const headers = body === undefined ? {} : { 'Content-Type': 'application/json' }
-  const url = token ? `${path}${path.includes('?') ? '&' : '?'}bootstrap=${encodeURIComponent(token)}` : path
-  const response = await fetch(url, {
+  if (window.__GATEWAY_API__) {
+    return window.__GATEWAY_API__(path, body)
+  }
+  const response = await fetch(path, {
     method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin',
-    headers,
+    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const result = await response.json()
