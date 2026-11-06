@@ -93,6 +93,25 @@ class LauncherSourceTests(unittest.TestCase):
         # 换版本后重跑一次就能改指向，所以不能"只在不存在时创建"。
         self.assertNotIn("if (Test-Path $link) { return }", script)
 
+    def test_powershell_scripts_start_with_a_utf8_bom(self):
+        """带中文的 .ps1 必须是 UTF-8 **带 BOM**。
+
+        Windows PowerShell 5.1 按 ANSI 解码无 BOM 的脚本，中文立刻变乱码，而且
+        乱码会吃掉行尾引号 —— 报错是看不懂的 `Unexpected token`，看起来像语法
+        错误。这条被踩过一次，所以固化成测试。
+        """
+        for script in (BUILD_SCRIPT, SHORTCUT_SCRIPT):
+            with self.subTest(script=script.name):
+                raw = script.read_bytes()
+                self.assertTrue(raw.startswith(b"\xef\xbb\xbf"),
+                                f"{script.name} 缺少 UTF-8 BOM（PowerShell 5.1 会乱码）")
+
+    def test_shortcut_can_point_at_another_install(self):
+        """`-Exe` 必须能用：仓库里编的 exe 缺 `.venv`，真正在跑的是用户目录那份。"""
+        script = SHORTCUT_SCRIPT.read_text(encoding="utf-8-sig")
+        self.assertIn("[string]$Exe = ''", script)
+        self.assertIn("$shortcut.WorkingDirectory = $working", script)
+
 
 class LauncherBuildTests(unittest.TestCase):
     """真编一次：编不出来就说明用户双击会失败。"""
