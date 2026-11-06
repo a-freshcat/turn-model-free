@@ -6,7 +6,10 @@ const $ = id => document.getElementById(id)
 const connecting = location.pathname === '/connect'
 const initialHash = new URLSearchParams(location.hash.slice(1))
 const bootstrap = initialHash.get('bootstrap') || ''
-if (bootstrap) history.replaceState(null, '', location.pathname + location.search)
+if (bootstrap) {
+  window.__GATEWAY_BOOTSTRAP__ = bootstrap
+  history.replaceState(null, '', location.pathname + location.search)
+}
 let locale = localStorage.getItem('gateway:locale') || 'zh'
 let dark = (localStorage.getItem('gateway:theme') || 'light') === 'dark'
 let page
@@ -318,6 +321,8 @@ async function switchView(targetView, targetAccount = '') {
   const pageRoot = $('page-root')
   const quotaRoot = $('quota-root')
   const quotaBtn = $('quota-link')
+  const tabChannels = $('tab-channels')
+  const tabQuota = $('tab-quota')
 
   if (targetView === 'quota') {
     if (pageRoot) pageRoot.hidden = true
@@ -326,14 +331,15 @@ async function switchView(targetView, targetAccount = '') {
       quotaBtn.textContent = '返回渠道卡片'
       quotaBtn.classList.add('primary')
     }
-    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa1')
+    if (tabChannels) tabChannels.classList.remove('active')
+    if (tabQuota) tabQuota.classList.add('active')
+
+    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa3')
     if (targetAccount) {
       setQuotaAccount(targetAccount)
     }
-    if (!quotaLoaded) {
-      await loadQuota()
-      quotaLoaded = true
-    }
+    await loadQuota()
+    quotaLoaded = true
   } else {
     if (quotaRoot) quotaRoot.hidden = true
     if (pageRoot) pageRoot.hidden = false
@@ -341,8 +347,13 @@ async function switchView(targetView, targetAccount = '') {
       quotaBtn.textContent = '配额看板 · 三个池'
       quotaBtn.classList.remove('primary')
     }
+    if (tabChannels) tabChannels.classList.add('active')
+    if (tabQuota) tabQuota.classList.remove('active')
   }
 }
+
+$('tab-channels')?.addEventListener('click', () => switchView('channels'))
+$('tab-quota')?.addEventListener('click', () => switchView('quota'))
 
 $('quota-link')?.addEventListener('click', () => {
   switchView(currentView === 'channels' ? 'quota' : 'channels')

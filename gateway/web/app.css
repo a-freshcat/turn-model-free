@@ -1,4 +1,32 @@
-/* Host wiring only. Upstream channel-card styles and tokens are unchanged. */
+/* 适配桌面端两栏布局：保证侧边栏始终固定在右侧，不掉到主内容下方 */
+.demo-shell {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 340px !important;
+  gap: 24px !important;
+  max-width: 1680px !important;
+  margin: 0 auto !important;
+  box-sizing: border-box !important;
+}
+
+.demo-side {
+  grid-column: 2 !important;
+  width: 340px !important;
+}
+
+main {
+  grid-column: 1 !important;
+  min-width: 0 !important;
+}
+
+@media (max-width: 900px) {
+  .demo-shell {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .demo-side, main {
+    grid-column: 1 !important;
+    width: auto !important;
+  }
+}
 [hidden] { display: none !important; }
 .ofm_root { max-width: none; }
 .gateway-summary { font-size: 12px; line-height: 1.7; }
@@ -17,7 +45,47 @@
   outline-offset: 2px;
 }
 
-/* Unified right-sidebar button system (matches #controls button across all actions) */
+/* 顶部选项卡导航 */
+.demo-head-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.demo-head-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--dsw-alias-bg-layer-2, #fbfbfc);
+  border: 1px solid var(--dsw-alias-border-l2, #d6d9de);
+  border-radius: 9px;
+  padding: 3px;
+  margin-left: 20px;
+}
+
+.demo-head-nav .nav-tab {
+  background: transparent;
+  border: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary, #606670);
+  cursor: pointer;
+  transition: all .14s ease;
+}
+
+.demo-head-nav .nav-tab:hover {
+  color: var(--dsw-alias-label-primary, #14171c);
+}
+
+.demo-head-nav .nav-tab.active {
+  background: var(--dsw-alias-bg-layer-1, #ffffff);
+  color: var(--dsw-alias-state-business-primary, #3d7dff);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
+}
 #controls button,
 #controls a.side-action-btn,
 .demo-side .side-action-btn {

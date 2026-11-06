@@ -97,9 +97,9 @@ def main():
     window = webview.create_window(
         title="白嫖模型接入 - 桌面控制台",
         url=app_url,
-        width=1180,
-        height=780,
-        min_size=(880, 580),
+        width=1380,
+        height=860,
+        min_size=(960, 600),
         text_select=True,
     )
 

@@ -11,8 +11,14 @@
 <body>
   <div class="demo-shell" id="dashboard-shell">
     <header class="demo-head">
-      <h1>白嫖模型接入</h1>
-      <span class="demo-badge">plugin v2.5.4 · 本机统一 API</span>
+      <div class="demo-head-title">
+        <h1>白嫖模型接入</h1>
+        <span class="demo-badge">plugin v2.5.4 · 本机统一 API</span>
+      </div>
+      <nav class="demo-head-nav" id="top-nav-tabs">
+        <button type="button" class="nav-tab active" id="tab-channels">渠道与账号管理</button>
+        <button type="button" class="nav-tab" id="tab-quota">配额看板 · 三个池</button>
+      </nav>
       <p id="mode-note">正在连接本机号池…</p>
     </header>
     <section id="protection-panel" class="protection-panel" role="alert" aria-live="assertive" hidden></section>

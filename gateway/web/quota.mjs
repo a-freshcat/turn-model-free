@@ -69,14 +69,17 @@ function theme() {
 theme()
 
 async function api(path, body) {
-  const response = await fetch(path, {
+  const token = window.__GATEWAY_BOOTSTRAP__ || ''
+  const headers = body === undefined ? {} : { 'Content-Type': 'application/json' }
+  const url = token ? `${path}${path.includes('?') ? '&' : '?'}bootstrap=${encodeURIComponent(token)}` : path
+  const response = await fetch(url, {
     method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin',
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const result = await response.json()
-  if (response.status === 401) $('quota-auth').hidden = false
+  if (response.status === 401 && $('quota-auth')) $('quota-auth').hidden = false
   if (!response.ok || result.ok === false) throw new Error(result.error?.message || '请求失败')
   return result
 }
