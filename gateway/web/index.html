@@ -6,6 +6,7 @@
   <title>白嫖模型接入 · 本机号池</title>
   <link rel="stylesheet" href="/assets/vendor/free-m-clone/dist/demo.css">
   <link rel="stylesheet" href="/assets/app.css?v=1.2.13">
+  <link rel="stylesheet" href="/assets/quota.css?v=20261105-ui8">
 </head>
 <body>
   <div class="demo-shell" id="dashboard-shell">
@@ -15,7 +16,41 @@
       <p id="mode-note">正在连接本机号池…</p>
     </header>
     <section id="protection-panel" class="protection-panel" role="alert" aria-live="assertive" hidden></section>
-    <main><div id="page-root" class="ofm_root"></div></main>
+    <main>
+      <div id="page-root" class="ofm_root"></div>
+      <div id="quota-root" class="quota-shell ofm_root" hidden>
+        <header class="ofm_hero ofm_glass">
+          <div class="ofm_pagehead">
+            <div class="ofm_pagetitle">
+              <h1>配额看板 · 独立号池调度</h1>
+              <p class="ofm_pagesub">按账号分类展示平台类型、并发容量、实时调度开关与三个独立配额池当前用量。</p>
+            </div>
+            <div class="quota-actions">
+              <button class="ofm_btn" id="quota-back-to-channels" type="button">返回渠道</button>
+              <button class="ofm_btn primary" id="quota-refresh-btn" type="button">刷新配额</button>
+            </div>
+          </div>
+          <div class="quota-toolbar">
+            <div class="ofm_seg" role="group" aria-label="分组筛选" id="quota-group-tabs">
+              <button type="button" data-group="all" aria-pressed="true">全部账号池</button>
+              <button type="button" data-group="antigravity" aria-pressed="false">Gemini / Antigravity 自用池</button>
+              <button type="button" data-group="external" aria-pressed="false">其他独立渠道池</button>
+            </div>
+            <label for="quota-account">账号筛选
+              <select id="quota-account">
+                <option value="">全部账号</option>
+              </select>
+            </label>
+            <div class="quota-summary-pills" id="quota-summary"></div>
+            <span id="quota-updated" class="ofm_note">正在读取…</span>
+          </div>
+          <p class="ofm_note">每个 Antigravity 账号固定包含三个独立配额池（Argon、Claude/GPT、其他 Gemini/内部型号）；池内数值不一致时按最低剩余折算当前已使用比例，不跨池累加或平均。</p>
+        </header>
+        <p id="quota-error" class="ofm_balanceerror" role="alert"></p>
+        <div id="quota-accounts"></div>
+        <p id="quota-empty" class="ofm_note quota-empty-box" hidden>当前筛选下暂无账号。请返回渠道页添加或切换上方分组筛选。</p>
+      </div>
+    </main>
     <aside class="demo-side">
       <section class="control-card">
         <h2>服务 / 语言 / 主题</h2>
@@ -25,7 +60,7 @@
           <label>语言<select id="locale"><option value="zh">中文</option><option value="en">English</option></select></label>
           <button type="button" id="theme">切换深色</button>
           <button type="button" id="refresh">刷新号池状态</button>
-          <a id="quota-link" class="side-action-btn" href="/quota" target="_blank">配额看板 · 三个池</a>
+          <button type="button" id="quota-link" class="side-action-btn">配额看板 · 三个池</button>
           <button type="button" id="reconnect">重新连接</button>
         </div>
       </section>

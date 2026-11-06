@@ -308,6 +308,61 @@ $('model-more').addEventListener('click', async () => {
   showAllModels = !showAllModels
   if (connected) await updateStatus()
 })
+
+// ── 侧边栏/主视图：渠道管理 vs 配额看板 SPA 切换 ──
+let currentView = 'channels'
+let quotaLoaded = false
+
+async function switchView(targetView, targetAccount = '') {
+  currentView = targetView
+  const pageRoot = $('page-root')
+  const quotaRoot = $('quota-root')
+  const quotaBtn = $('quota-link')
+
+  if (targetView === 'quota') {
+    if (pageRoot) pageRoot.hidden = true
+    if (quotaRoot) quotaRoot.hidden = false
+    if (quotaBtn) {
+      quotaBtn.textContent = '返回渠道卡片'
+      quotaBtn.classList.add('primary')
+    }
+    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa1')
+    if (targetAccount) {
+      setQuotaAccount(targetAccount)
+    }
+    if (!quotaLoaded) {
+      await loadQuota()
+      quotaLoaded = true
+    }
+  } else {
+    if (quotaRoot) quotaRoot.hidden = true
+    if (pageRoot) pageRoot.hidden = false
+    if (quotaBtn) {
+      quotaBtn.textContent = '配额看板 · 三个池'
+      quotaBtn.classList.remove('primary')
+    }
+  }
+}
+
+$('quota-link')?.addEventListener('click', () => {
+  switchView(currentView === 'channels' ? 'quota' : 'channels')
+})
+
+$('quota-back-to-channels')?.addEventListener('click', () => {
+  switchView('channels')
+})
+
+// 监听渠道卡片内部点击「查看配额 · 三个池」，在客户端本地窗口内直接平滑切换
+document.addEventListener('click', event => {
+  const target = event.target?.closest?.('a[href*="/quota"]')
+  if (target) {
+    event.preventDefault()
+    const url = new URL(target.href, location.origin)
+    const acc = url.searchParams.get('account') || ''
+    switchView('quota', acc)
+  }
+})
+
 if (connecting) {
   $('dashboard-shell').hidden = true
   $('connect-shell').hidden = false

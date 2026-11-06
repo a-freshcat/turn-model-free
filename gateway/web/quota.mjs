@@ -750,7 +750,7 @@ $('quota-theme').addEventListener('click', () => {
   theme()
 })
 
-$('quota-refresh').addEventListener('click', async event => {
+$('quota-refresh')?.addEventListener('click', async event => {
   event.currentTarget.disabled = true
   $('quota-error').textContent = ''
   try {
@@ -767,7 +767,25 @@ $('quota-refresh').addEventListener('click', async event => {
   }
 })
 
-$('quota-auth-form').addEventListener('submit', async event => {
+$('quota-refresh-btn')?.addEventListener('click', async event => {
+  event.currentTarget.disabled = true
+  const errEl = $('quota-error')
+  if (errEl) errEl.textContent = ''
+  try {
+    const reply = await api('/ui/quota/refresh', {
+      method: 'quota.refresh',
+      payload: { accountId: selected },
+    })
+    await load()
+    if (errEl) errEl.textContent = (reply.errors || []).join('；')
+  } catch (error) {
+    if (errEl) errEl.textContent = error.message
+  } finally {
+    event.currentTarget.disabled = false
+  }
+})
+
+$('quota-auth-form')?.addEventListener('submit', async event => {
   event.preventDefault()
   try {
     await api('/ui/session', { key: $('quota-key').value })
@@ -779,8 +797,19 @@ $('quota-auth-form').addEventListener('submit', async event => {
   }
 })
 
-try {
-  await load()
-} catch (error) {
-  $('quota-error').textContent = error.message
+export { load as loadQuota, render as renderQuota, setQuotaAccount }
+
+function setQuotaAccount(accId) {
+  selected = accId || ''
+  if ($('quota-account')) $('quota-account').value = selected
+  render()
+}
+
+// If loaded directly as the standalone quota.html page
+if (location.pathname.startsWith('/quota')) {
+  try {
+    await load()
+  } catch (error) {
+    $('quota-error').textContent = error.message
+  }
 }
