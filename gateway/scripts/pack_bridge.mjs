@@ -21,7 +21,7 @@ import { homedir } from 'node:os'
 import net from 'node:net'
 import path from 'node:path'
 import readline from 'node:readline'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { dshRequire, findDshModules } from './dsh_modules.mjs'
 
 // 插件装在用户目录下。默认路径由 DSH_HOME 推出，不写死任何人的绝对路径。
@@ -172,25 +172,17 @@ ctx.reflect.provide('connection', { fetch: { register(spec) { registered.push(sp
 let endpoint = null
 let seq = 0
 
-// 已打补丁的 pack.js 副本（可选）。
+// 默认**只加载插件目录里的原件**。
 //
-// 插件升级会整包覆盖 `pack.js`，所以补丁不能写进原件；这里改成「原件只读，
-// 副本优先」。副本由 `scripts/patch-raccoon-cooldown.mjs` 产出，只修 Raccoon
-// 的冷却退避（档位每拿到响应降一级，不再单向涨到 10 分钟封顶）。
+// 曾经的错误做法：把打过补丁的 pack.js 复制到 `gateway/.pack/` 再加载。pack.js
+// 会按**自身所在目录**读取同级资源（如 `qoder-auth-wasm.wasm`），副本目录里没有
+// 这些文件，于是 Qoder 等渠道直接报 ENOENT。补丁只能在与原件同一目录、且同级
+// 资源可见的前提下生效；在那之前保持原件不动。
 //
-// 副本缺失、或与当前原件的补丁串已不匹配时**静默退回原件**：没打上补丁只是
-// 行为回到上游默认，绝不能让桥起不来。
+// `DSH_PACK_PATCHED` 仅供隔离实验显式指定，默认绝不启用。
 function patchedPackPath() {
-  if (process.env.DSH_PACK_PATCHED) return process.env.DSH_PACK_PATCHED
-  const script = fileURLToPath(new URL('./patch-raccoon-cooldown.mjs', import.meta.url))
-  const candidate = fileURLToPath(new URL('../.pack/pack.raccoon-cooldown.js', import.meta.url))
-  // 每次启动从当前插件原件重新生成，升级后不会误用旧副本；发行包和 git clone
-  // 只需带补丁脚本，不必携带 3MB 的机器特定副本。
-  const built = spawnSync(process.execPath, [script], {
-    env: process.env, encoding: 'utf8', windowsHide: true, timeout: 30000,
-  })
-  if (built.status === 0 && existsSync(candidate)) return candidate
-  logs.push(['warn', `Raccoon 补丁未应用：${(built.stderr || built.error?.message || '未知错误').slice(0, 240)}`])
+  const explicit = process.env.DSH_PACK_PATCHED
+  if (explicit && existsSync(explicit)) return explicit
   return null
 }
 
@@ -243,8 +235,8 @@ async function startGatewayOn(port) {
     env: {
       ...process.env,
       DSH_PACK_HOME: DSH_HOME,
-      // 真正的对话在此子进程里执行；它也要用经过同一补丁的 pack.js。
-      DSH_PACK_PATCHED: patchedPackPath() || PACK,
+      // 不传 DSH_PACK_PATCHED：备用网关必须和桥使用同一份**原件**，
+      // 否则 pack.js 的同级资源（wasm 等）又会对不上。
       DSH_OPENAI_GATEWAY_ENABLED: '1',
       DSH_OPENAI_GATEWAY_PORT: String(port),
     },

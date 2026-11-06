@@ -47,11 +47,13 @@ class RaccoonCooldownPatchTests(unittest.TestCase):
         self.assertTrue(PATCH_SCRIPT.is_file(), "补丁脚本丢失")
 
     def test_patch_still_applies_to_installed_pack(self):
-        """上游 pack.js 一变，补丁串就可能匹配不上。
+        """补丁串是否还能匹配当前插件包。
 
-        这种情况必须**明确失败**而不是静默跳过：静默意味着补丁悄悄失效，
-        而用户又会重新遇到「只有 Raccoon 老冷却」。
+        补丁默认**不再加载**（副本目录缺同级 wasm 会打断 Qoder），这里只校验
+        脚本本身没和上游脱节。没有生成副本时跳过：产物是实验用的临时文件。
         """
+        if not PATCHED.is_file():
+            self.skipTest("未生成补丁副本（默认不启用）")
         result = _run(PATCH_SCRIPT, "--check")
         if result.returncode == 2:
             # 没装插件 —— 只跑本机 Antigravity 的用户本来就没有 pack.js。
@@ -75,14 +77,25 @@ class RaccoonCooldownPatchTests(unittest.TestCase):
         )
         self.assertIn("全部通过", result.stdout)
 
-    def test_bridge_generates_patch_and_chat_gateway_loads_it(self):
-        """桥和真正发送对话的备用网关都必须使用本补丁。"""
+    def test_bridge_defaults_to_the_original_pack(self):
+        """默认必须加载插件目录里的原件。
+
+        曾经自动把补丁副本放到 `gateway/.pack/` 再加载，结果 pack.js 按**自身
+        目录**读取同级 `qoder-auth-wasm.wasm`，副本目录没有该文件，Qoder 直接
+        报 ENOENT。所以默认路径只认原件，补丁副本只能显式通过环境变量指定。
+        """
         bridge = (ROOT / "scripts" / "pack_bridge.mjs").read_text(encoding="utf-8")
-        gateway = (ROOT / "scripts" / "pack_gateway.mjs").read_text(encoding="utf-8")
-        self.assertIn("patch-raccoon-cooldown.mjs", bridge)
-        self.assertIn("spawnSync(process.execPath", bridge)
-        self.assertIn("DSH_PACK_PATCHED: patchedPackPath() || PACK", bridge)
-        self.assertIn("process.env.DSH_PACK_PATCHED ||", gateway)
+        self.assertIn("const explicit = process.env.DSH_PACK_PATCHED", bridge)
+        self.assertNotIn("spawnSync(process.execPath", bridge)
+        # 备用网关不再被注入补丁副本路径。
+        self.assertNotIn("DSH_PACK_PATCHED: patchedPackPath()", bridge)
+
+    def test_patch_script_still_produces_expected_logic(self):
+        """补丁脚本本身保持可用（供隔离实验），但不再被默认加载。"""
+        if not PATCHED.is_file():
+            self.skipTest("未生成补丁副本")
+        patch_script = (ROOT / "scripts" / "patch-raccoon-cooldown.mjs").read_text(encoding="utf-8")
+        self.assertIn("raccoonCooldownStep", patch_script)
         patched = PATCHED.read_text(encoding="utf-8")
         self.assertIn("if (isRateLimitError) raccoonCooldownStep(accountId, options.model)", patched)
 
