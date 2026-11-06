@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from bridge_client import BridgeError, PackBridge
-from web_api import CHANNELS
+from web_api import CHANNELS, RETIRED_CHANNELS
 
 BRIDGED = tuple(c for c in CHANNELS if c != "antigravity")
 
@@ -56,7 +56,14 @@ class BridgeProtocolTests(unittest.IsolatedAsyncioTestCase):
         try:
             hello = await bridge.start()
             self.assertTrue(hello.get("ready"))
-            self.assertEqual(set(hello["channels"]), set(CHANNELS))
+            # 桥实际报的是 pack.js 认识的渠道。它认得比我们多：`trae` 与
+            # `loomy` 已下线，界面上不再提供入口，但桥仍然会列出它们。
+            # 这里断言「我们保留的渠道一个不少」，而不是要求两边完全相等。
+            reported = set(hello["channels"])
+            self.assertFalse(set(CHANNELS) - reported,
+                             f"桥缺少渠道: {set(CHANNELS) - reported}")
+            self.assertFalse(set(RETIRED_CHANNELS) & set(CHANNELS),
+                             "已下线渠道不该出现在 CHANNELS 里")
         finally:
             await bridge.aclose()
 

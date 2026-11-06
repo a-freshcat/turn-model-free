@@ -25,10 +25,14 @@ from bridge_client import BridgeError, PackBridge
 from config import Settings
 from antigravity_auth import AntigravityAuth, OAuthFailure, model_pool
 from plugin_gateway import PluginGateway, PluginGatewayError
+from protection import DispatchProtection, ProtectionBlocked
 
 router = APIRouter()
+# 已接入的渠道。`trae`（字节）与 `loomy`（讯飞）已下线：插件包里仍认得这两个
+# id，但登录与模型都不再可用，留在这里只会让渠道页出现点不通的条目。
 CHANNELS = ("codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
-            "trae", "cline", "raccoon", "minimax", "antigravity")
+            "cline", "raccoon", "zcode", "minimax", "antigravity")
+RETIRED_CHANNELS = ("trae", "loomy")
 COOKIE = "gateway_ui_session"
 TTL = 8 * 3600
 
@@ -231,6 +235,12 @@ def same_origin(request: Request) -> bool:
 
 def authorized(request: Request) -> bool:
     scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    # 带了 Origin 就必须是本机页面发出的。状态变更（POST）尤其如此：只认 Bearer
+    # 会让「浏览器从任意站点发一个跨域 POST」直接改到号池与保护状态——Bearer
+    # 头本来就该由非浏览器客户端发出，它不该同时成为绕过 CSRF 的通道。
+    origin = request.headers.get("origin")
+    if origin is not None and not same_origin(request):
+        return False
     if scheme.lower() == "bearer" and hmac.compare_digest(value.encode(), request.app.state.api_key):
         return True
     manager = request.app.state.web
@@ -240,6 +250,18 @@ def authorized(request: Request) -> bool:
     return manager.sessions.get(session, 0) > now and (
         request.method in {"GET", "HEAD"} or same_origin(request)
     )
+
+
+def guard_rejection(request: Request):
+    """区分「没登录」与「跨源被拒」。
+
+    两者都返回 401 会让用户看到「请先连接本机网关」，而他明明刚连上——
+    真正该说的是「这个请求不是本机页面发的」。
+    """
+    origin = request.headers.get("origin")
+    if origin is not None and not same_origin(request):
+        return failure("请求来源不是本机页面，已拒绝", 403)
+    return failure("请先连接本机网关", 401)
 
 
 class SessionInput(BaseModel):
@@ -281,6 +303,17 @@ class WebManager:
         # 12 家的账号、凭据、模型与对话都由插件负责；这里只发现并代理。
         self.plugin = PluginGateway(bridge=self.bridge)
         self._balance_cache: dict[str, tuple[float, dict]] = {}
+        # 调用保护必须是**号池正在用的那一个**，否则「上游拒绝 → 暂停」只写进
+        # 一个没人读的实例：页面上看不到暂停，号池也照样换下一个号继续打。
+        # lifespan 会注入进程级实例；这里先接住号池已有的，没有才自建一个，
+        # 并立刻挂回号池与上游，保证三者永远指向同一处计数器。
+        guard = getattr(pool, "protection", None)
+        if guard is None:
+            guard = DispatchProtection(path.parent / ".gateway-protection.json")
+        self.protection = guard
+        pool.protection = guard
+        if getattr(upstream, "protection", None) is None:
+            upstream.protection = guard
 
     def _write(self, raw, path=None):
         # Atomic replacement prevents a partial credential/config file on crash.
@@ -532,6 +565,7 @@ class WebManager:
         # 问不到时退回旧判据（本次会话在等的那些），不再一律当成占位——那会把
         # 真账号也藏掉。
         present: dict[str, bool] = {}
+        store_unreadable = False
         if placeholders:
             try:
                 answer = await self.bridge.call("credential.presence", {
@@ -540,6 +574,14 @@ class WebManager:
                            if isinstance(v, bool)}
             except Exception:  # noqa: BLE001 - 可选增强，任何失败都退回旧判据
                 present = {}
+                store_unreadable = True
+        if store_unreadable and placeholders:
+            # 凭据库读不出来时，占位账号既不能删（可能是真账号）也不能用
+            # （没人能保证它有凭据）。这种「说不清」的状态要暂停调用并把原因
+            # 写清楚，而不是闷着继续打——否则用户只会看到一串莫名失败。
+            guard = getattr(self, "protection", None)
+            if guard is not None:
+                await guard.pause(reason="credential_store_unavailable")
         now_ms = int(time.time() * 1000)
         out, stale = [], []
         for entry in entries:
@@ -549,8 +591,11 @@ class WebManager:
             # （登录完成了但没拿到昵称），不能当空壳删。
             candidate = nickname == account_id
             has_credential = present.get(account_id)
-            pending = candidate and has_credential is not True and account_id in self.bridged
-            if candidate and has_credential is not True and not pending:
+            # 只有**明确**知道凭据不存在（False）才算空壳。`None`（问不到）不是
+            # 证据——把「未知」当成「没有」会把仍然有效的账号直接删掉，用户的
+            # 登录就没了。这是不可逆操作，判据必须偏向保留。
+            pending = candidate and has_credential is not False and account_id in self.bridged
+            if candidate and has_credential is False and not pending:
                 stale.append(account_id)
                 continue
             enabled = entry.get("enabled") is not False
@@ -1006,7 +1051,7 @@ async def login(body: SessionInput, request: Request):
 @router.get("/ui/state")
 async def state(request: Request):
     if not authorized(request):
-        return failure("请先连接本机网关", 401)
+        return guard_rejection(request)
     manager = request.app.state.web
     snapshot = await request.app.state.pool.snapshot()
     rows = await manager.rows()
@@ -1030,7 +1075,7 @@ async def state(request: Request):
 @router.get("/ui/quota")
 async def quota_snapshot(request: Request):
     if not authorized(request):
-        return failure("请先连接本机网关", 401)
+        return guard_rejection(request)
     manager = request.app.state.web
     raw_key = getattr(request.app.state, "api_key", b"")
     api_key = raw_key.decode("ascii", errors="ignore") if isinstance(raw_key, bytes) else str(raw_key)
@@ -1043,6 +1088,9 @@ async def quota_snapshot(request: Request):
             value = await manager.ag.load(row["id"])
             models = [{"id": id_, "name": meta["name"], "remaining": meta.get("remaining"),
                        "reset_time": meta.get("reset_time", ""),
+                       # reset_at 是不随区域设置变化的 epoch 秒；前端倒计时只用它，
+                       # 本地化文本 reset_time 仅用于显示。
+                       "reset_at": meta.get("reset_at"),
                        "pool": meta.get("pool", model_pool(meta["name"], id_))}
                       for id_, meta in value.get("catalog", {}).items()]
             result.append({"id": row["id"], "name": value.get("email", row["nickname"]),
@@ -1058,7 +1106,7 @@ async def quota_snapshot(request: Request):
 @router.post("/ui/quota/refresh")
 async def quota_refresh(body: RPCInput, request: Request):
     if not authorized(request):
-        return failure("请先连接本机网关", 401)
+        return guard_rejection(request)
     id_ = body.payload.get("accountId")
     errors = []
     for row in await request.app.state.web.rows():
@@ -1071,10 +1119,41 @@ async def quota_refresh(body: RPCInput, request: Request):
     return {"ok": True, "errors": errors}
 
 
+@router.get("/ui/protection")
+async def protection_status(request: Request):
+    if not authorized(request):
+        return guard_rejection(request)
+    guard = getattr(request.app.state.web, "protection", None)
+    if guard is None:
+        return failure("调用保护暂不可用", 503)
+    return JSONResponse(await guard.snapshot(), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/ui/protection")
+async def protection_action(body: RPCInput, request: Request):
+    if not authorized(request):
+        return guard_rejection(request)
+    guard = getattr(request.app.state.web, "protection", None)
+    if guard is None:
+        return failure("调用保护暂不可用", 503)
+    if body.method == "protection.pause":
+        await guard.pause()
+    elif body.method == "protection.resume":
+        if body.payload.get("acknowledge") is not True:
+            return failure("请先检查暂停原因并确认恢复")
+        try:
+            await guard.resume()
+        except ProtectionBlocked:
+            return failure("无法保存恢复状态，请检查本机文件权限", 503)
+    else:
+        return failure("未知的调用保护操作")
+    return JSONResponse(await guard.snapshot(), headers={"Cache-Control": "no-store"})
+
+
 @router.post("/ui/rpc")
 async def rpc(body: RPCInput, request: Request):
     if not authorized(request):
-        return failure("请先连接本机网关", 401)
+        return guard_rejection(request)
     try:
         value = await request.app.state.web.rpc(body.method, body.payload, str(request.base_url).rstrip("/"))
         return JSONResponse({"ok": True, "value": value}, headers={"Cache-Control": "no-store"})
@@ -1113,7 +1192,7 @@ async def oauth_callback(request: Request):
 @router.get("/ui/import/{request_id}")
 async def import_details(request_id: str, request: Request):
     if not authorized(request):
-        return failure("请先连接本机网关", 401)
+        return guard_rejection(request)
     manager = request.app.state.web
     pending = manager.pending.get(request_id)
     if pending is None or pending["expires"] <= time.monotonic():
@@ -1124,7 +1203,7 @@ async def import_details(request_id: str, request: Request):
 @router.post("/ui/import")
 async def import_account(body: ImportInput, request: Request):
     if not authorized(request):
-        return failure("请先连接本机网关", 401)
+        return guard_rejection(request)
     manager = request.app.state.web
     async with manager.lock:
         pending = manager.pending.get(body.request_id)

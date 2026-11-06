@@ -16,15 +16,9 @@ if not exist "%~dp0.vendor\fastapi\__init__.py" (
     )
 )
 
-rem Prefer pythonw.exe if available to run without a background terminal window
-set "DESKTOP_PYTHON=%GATEWAY_PYTHON%"
-for %%I in ("%GATEWAY_PYTHON%") do (
-    if exist "%%~dpIpythonw.exe" (
-        set "DESKTOP_PYTHON=%%~dpIpythonw.exe"
-    )
-)
-
-"%DESKTOP_PYTHON%" "%~dp0launch_desktop.py" --port %GATEWAY_PORT% %*
+rem Keep a console so the gateway URL and key printed by launch_desktop.py are visible.
+rem pythonw.exe has no stdout/stderr; selecting it hid the key entirely.
+"%GATEWAY_PYTHON%" "%~dp0launch_desktop.py" --port %GATEWAY_PORT% %*
 set "GATEWAY_EXIT=%ERRORLEVEL%"
 popd
 if not "%GATEWAY_EXIT%"=="0" (

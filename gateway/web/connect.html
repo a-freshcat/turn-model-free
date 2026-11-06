@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>turn-model-free · 导入账号</title>
+<link rel="stylesheet" href="/assets/console.css?v=1.3.1">
+<style>
+  .page {
+    min-height: 100%;
+    display: grid; place-items: start center;
+    padding: 32px 20px;
+  }
+  .sheet {
+    width: min(560px, 100%);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .sheet-head {
+    padding: 15px 20px;
+    background: var(--surface-alt);
+    border-bottom: 1px solid var(--line);
+  }
+  .sheet-head h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  .sheet-head p { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-3); }
+  .sheet-body { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field > span { font-size: 11.5px; color: var(--ink-2); }
+  .field > span em { font-style: normal; color: var(--ink-3); font-size: 10.5px; padding-left: 4px; }
+  .field input, .field select, .field textarea {
+    font: inherit; font-size: 12.5px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-sm); padding: 7px 10px; outline: none;
+    width: 100%;
+  }
+  .field textarea { font-family: var(--mono); font-size: 11.5px; line-height: 1.6; resize: vertical; }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--accent-edge); box-shadow: 0 0 0 3px rgba(168,86,100,.11);
+  }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .actions { display: flex; gap: 8px; margin-top: 4px; }
+  .actions .btn { flex: 1; justify-content: center; }
+  .hint {
+    font-size: 11px; color: var(--ink-3);
+    background: var(--surface-alt);
+    border: 1px dashed var(--line);
+    border-radius: var(--r-sm);
+    padding: 9px 11px;
+    line-height: 1.65;
+  }
+  .hint code { font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); }
+  .err { font-size: 11.5px; color: var(--cinnabar); min-height: 16px; }
+  .ok { font-size: 11.5px; color: var(--jade); min-height: 16px; }
+</style>
+</head>
+<body data-theme="paper">
+<div class="page">
+  <form class="sheet" id="import-form">
+    <div class="sheet-head">
+      <h1>导入已有上游</h1>
+      <p id="import-note">正在读取添加窗口…</p>
+    </div>
+    <div class="sheet-body">
+      <div class="row2">
+        <label class="field">
+          <span>账号 ID</span>
+          <input name="id" required pattern="[A-Za-z0-9_.-]{1,64}" maxlength="64" placeholder="account-01">
+        </label>
+        <label class="field">
+          <span>显示名称 <em>可选</em></span>
+          <input name="nickname" maxlength="64" placeholder="用于区分你的账号">
+        </label>
+      </div>
+
+      <label class="field" id="endpoint-field">
+        <span>完整 Chat Completions 地址</span>
+        <input name="endpoint" type="url" placeholder="https://provider.example/v1/chat/completions">
+      </label>
+
+      <label class="field">
+        <span>模型映射 <em>对外名称 → 上游模型 ID</em></span>
+        <textarea name="models" rows="4" required spellcheck="false">{"local-chat":"provider-model-id"}</textarea>
+      </label>
+
+      <div id="credential-fields">
+        <div class="row2">
+          <label class="field">
+            <span>凭据类型</span>
+            <select name="credential_type">
+              <option value="token_env">Token 环境变量</option>
+              <option value="token">Bearer Token</option>
+              <option value="cookie_env">Cookie 环境变量</option>
+              <option value="cookie">Cookie</option>
+              <option value="">无凭据</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>凭据值 / 环境变量名</span>
+            <input name="credential" type="password" autocomplete="new-password">
+          </label>
+        </div>
+      </div>
+
+      <label class="field" style="max-width:200px">
+        <span>单账号最大并发</span>
+        <input name="max_concurrency" type="number" min="1" max="32" value="1" required>
+      </label>
+
+      <div class="hint">
+        这是「自有兼容上游」的导入入口：填你自己的接口地址与凭据。
+        如果你要登录腾讯 WorkBuddy、华为 CodeArts、阿里 Qoder 等渠道，
+        请回控制台的「渠道接入」页点对应渠道，那走的是厂商自己的登录流程。
+      </div>
+
+      <p class="err" id="import-error" role="alert"></p>
+      <p class="ok" id="import-ok"></p>
+
+      <div class="actions">
+        <button class="btn primary" type="submit" id="import-submit">保存账号</button>
+        <button class="btn" type="button" id="import-close">关闭窗口</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id)
+const params = new URLSearchParams(location.search)
+const requestId = params.get('request') || ''
+let info = null
+
+async function api(path, options = {}) {
+  const { body, headers, ...rest } = options
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    ...rest,
+    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(headers || {}) },
+    ...(body === undefined ? {} : { body }),
+  })
+  const text = await response.text()
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = null }
+  if (!response.ok || (data && data.ok === false)) {
+    throw new Error(data?.error?.message || data?.detail || `HTTP ${response.status}`)
+  }
+  return data
+}
+
+async function boot() {
+  try {
+    info = await api('/ui/import/' + encodeURIComponent(requestId))
+  } catch (error) {
+    $('import-note').textContent = '添加窗口不可用'
+    $('import-error').textContent = error.message
+    $('import-submit').disabled = true
+    return
+  }
+  $('import-note').textContent = info.demo
+    ? '演示账号 · 不联网、不使用真实凭据 · 保存后返回控制台'
+    : '导入已有的 OpenAI 兼容上游配置。此窗口不会发起厂商登录。'
+  $('endpoint-field').hidden = Boolean(info.demo)
+  $('credential-fields').hidden = Boolean(info.demo)
+  $('import-form').elements.endpoint.required = !info.demo
+  if (info.demo) $('import-form').elements.models.value = '{"demo-chat":"fixture-chat"}'
+}
+
+$('import-form').addEventListener('submit', async event => {
+  event.preventDefault()
+  $('import-error').textContent = ''
+  $('import-ok').textContent = ''
+  const button = $('import-submit')
+  button.disabled = true
+  try {
+    if (!info) throw new Error('请先连接本机网关')
+    const data = new FormData(event.currentTarget)
+    const models = JSON.parse(data.get('models'))
+    if (!models || typeof models !== 'object' || Array.isArray(models)) {
+      throw new Error('模型映射需要是 JSON 对象')
+    }
+    const account = {
+      id: data.get('id'),
+      nickname: data.get('nickname'),
+      models,
+      max_concurrency: Number(data.get('max_concurrency')),
+      status: 'active',
+    }
+    if (!info.demo) {
+      account.endpoint = data.get('endpoint')
+      const type = data.get('credential_type')
+      if (type) account[type] = data.get('credential')
+    }
+    await api('/ui/import', {
+      method: 'POST',
+      headers: { Origin: location.origin },
+      body: JSON.stringify({ request_id: requestId, account }),
+    })
+    $('import-form').elements.credential.value = ''
+    $('import-ok').textContent = '账号已保存。回到控制台点「刷新」即可看到它。'
+    button.textContent = '已保存'
+  } catch (error) {
+    $('import-error').textContent = error instanceof SyntaxError
+      ? '模型映射不是有效的 JSON 对象'
+      : error.message
+    button.disabled = false
+  }
+})
+
+$('import-close').addEventListener('click', () => window.close())
+
+const theme = localStorage.getItem('gateway:theme') || 'paper'
+document.body.dataset.theme = theme
+
+await boot()
+</script>
+</body>
+</html>

@@ -14,11 +14,14 @@
 //
 // pack.js 装在用户目录下，是已安装插件的产物。本进程只读它，不改任何文件；
 // 裸包名 @deepseek-ai/* 通过 pack_loader.mjs 的解析钩子指向 DSH app 自带实现。
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
+import net from 'node:net'
 import path from 'node:path'
 import readline from 'node:readline'
+import { spawn, spawnSync } from 'node:child_process'
 import { dshRequire, findDshModules } from './dsh_modules.mjs'
 
 // 插件装在用户目录下。默认路径由 DSH_HOME 推出，不写死任何人的绝对路径。
@@ -169,15 +172,138 @@ ctx.reflect.provide('connection', { fetch: { register(spec) { registered.push(sp
 let endpoint = null
 let seq = 0
 
+// 已打补丁的 pack.js 副本（可选）。
+//
+// 插件升级会整包覆盖 `pack.js`，所以补丁不能写进原件；这里改成「原件只读，
+// 副本优先」。副本由 `scripts/patch-raccoon-cooldown.mjs` 产出，只修 Raccoon
+// 的冷却退避（档位每拿到响应降一级，不再单向涨到 10 分钟封顶）。
+//
+// 副本缺失、或与当前原件的补丁串已不匹配时**静默退回原件**：没打上补丁只是
+// 行为回到上游默认，绝不能让桥起不来。
+function patchedPackPath() {
+  if (process.env.DSH_PACK_PATCHED) return process.env.DSH_PACK_PATCHED
+  const script = fileURLToPath(new URL('./patch-raccoon-cooldown.mjs', import.meta.url))
+  const candidate = fileURLToPath(new URL('../.pack/pack.raccoon-cooldown.js', import.meta.url))
+  // 每次启动从当前插件原件重新生成，升级后不会误用旧副本；发行包和 git clone
+  // 只需带补丁脚本，不必携带 3MB 的机器特定副本。
+  const built = spawnSync(process.execPath, [script], {
+    env: process.env, encoding: 'utf8', windowsHide: true, timeout: 30000,
+  })
+  if (built.status === 0 && existsSync(candidate)) return candidate
+  logs.push(['warn', `Raccoon 补丁未应用：${(built.stderr || built.error?.message || '未知错误').slice(0, 240)}`])
+  return null
+}
+
+// ── 备用网关（`gateway.ensure`）──
+//
+// 与 8326 的归属关系见上方注释：8326 永远是 DSH 的，桥只用 18326。
+const FALLBACK_GATEWAY_PORT = Number(process.env.DSH_FALLBACK_GATEWAY_PORT || 18326)
+let gatewayStarting = null
+let gatewayStarted = false
+let gatewayChild = null
+
+/** 端口是否已有人在监听。用一次真实 TCP 连接判断，比自己记状态可靠。 */
+function isPortOpen(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port })
+    const done = (ok) => {
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve(ok)
+    }
+    socket.setTimeout(800)
+    socket.once('connect', () => done(true))
+    socket.once('timeout', () => done(false))
+    socket.once('error', () => done(false))
+  })
+}
+
+/** 插件网关的调用密钥：与 Python 侧读的是同一个文件。 */
+function readGatewayKey() {
+  try {
+    const file = path.join(homedir(), '.dsh', 'openai-gateway', 'api-key')
+    const value = readFileSync(file, 'utf8').trim()
+    return value || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 在指定端口拉起 pack.js 自带的 OpenAI 网关。
+ *
+ * 做法是**另起一个进程**，而不是在当前进程里再 `apply()` 一次：pack.js 的
+ * `apply()` 会注册 cordis 服务，同一个进程注册两遍会互相覆盖，反而是新的
+ * 故障源。子进程只需带上端口环境变量，其余沿用同一套 pack 与 loader。
+ */
+async function startGatewayOn(port) {
+  if (gatewayStarted) return
+  const script = fileURLToPath(new URL('./pack_gateway.mjs', import.meta.url))
+  const child = spawn(process.execPath, ['--import', loaderUrl(), script], {
+    env: {
+      ...process.env,
+      DSH_PACK_HOME: DSH_HOME,
+      // 真正的对话在此子进程里执行；它也要用经过同一补丁的 pack.js。
+      DSH_PACK_PATCHED: patchedPackPath() || PACK,
+      DSH_OPENAI_GATEWAY_ENABLED: '1',
+      DSH_OPENAI_GATEWAY_PORT: String(port),
+    },
+    // stdin 给 'ignore'：这个子进程不需要任何输入，只等一个退出信号。
+    // 它**不能**把 stdin 关闭当成退出条件（曾因此刚启动就退出）。
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  gatewayChild = child
+  let stderr = ''
+  child.stderr.on('data', (chunk) => { stderr += String(chunk) })
+  child.stdout.on('data', () => {})
+  child.on('exit', () => {
+    // 子进程自己退了（崩溃/端口被占）：允许下一次 ensure 重新拉起。
+    gatewayStarted = false
+    gatewayStarting = null
+    if (gatewayChild === child) gatewayChild = null
+  })
+  gatewayStarted = true
+  // 等端口真的可连，而不是等一个固定的 sleep。首次启动要装载凭据/附件服务，
+  // 实测 3~8 秒，所以给到 30 秒。
+  for (let i = 0; i < 300; i += 1) {
+    if (await isPortOpen(port)) return
+    if (!gatewayStarted) {
+      throw new Error(`备用网关进程提前退出${stderr ? `：${stderr.slice(0, 300)}` : ''}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`备用网关未能在端口 ${port} 上就绪${stderr ? `：${stderr.slice(0, 300)}` : ''}`)
+}
+
+/** 桥退出时把网关子进程一并带走，别留孤儿占着端口。 */
+function killGatewayChild() {
+  if (gatewayChild === null) return
+  try {
+    gatewayChild.kill()
+  } catch {
+    // 已经退出就忽略。
+  }
+  gatewayChild = null
+  gatewayStarted = false
+  gatewayStarting = null
+}
+
+function loaderUrl() {
+  return pathToFileURL(fileURLToPath(new URL('./pack_register.mjs', import.meta.url))).href
+}
+
 async function load() {
   if (credentialsReady === 'unavailable' || credentialsReady.startsWith('memory-fallback:')) {
     throw new Error('Persistent credential store is unavailable; bridge startup stopped to protect existing accounts')
   }
-  const mod = await import(pathToFileURL(PACK).href)
+  const patched = patchedPackPath()
+  const target = patched || PACK
+  const mod = await import(pathToFileURL(target).href)
   await mod.apply(ctx, {})
   endpoint = registered.find(r => r.path === '/api/channel-pack')
   if (!endpoint) throw new Error('channel-pack endpoint not registered')
-  return { name: mod.name, inject: mod.inject }
+  return { name: mod.name, inject: mod.inject, patched: Boolean(patched) }
 }
 
 
@@ -278,6 +404,46 @@ const handlers = {
       patch: payload?.patch,
     })
   },
+  /**
+   * 把插件自己的 OpenAI 兼容网关拉到**备用端口**上。
+   *
+   * 为什么需要它：对话转发目标是插件网关（默认 8326，由 DSH 桌面端持有）。
+   * DSH 没开时那个端口是空的，网关于是只能回 `ConnectError` —— 而账号、令牌、
+   * 积分全都正常，用户看到的是「转发失败」，会误以为号池坏了。
+   *
+   * 为什么必须是备用端口：8326 归 DSH，桥抢过来会让 DSH 自己 bind 失败并静默
+   * 降级（见上方 `DSH_OPENAI_GATEWAY_ENABLED` 那段）。所以这里用 18326，只
+   * 在 8326 确实没人监听时才拉起，且**绝不**去碰 8326。
+   *
+   * 实现上不能指望 pack.js 提供这个 RPC —— 它没有（`gateway.ensure` 会回
+   * unknown method，Python 侧原先就是被这条空路径骗了）。桥必须自己起：
+   * `apply()` 会启动网关，端口由 `DSH_OPENAI_GATEWAY_PORT` 决定。
+   */
+  async 'gateway.ensure'(payload) {
+    const requested = Number(payload?.port ?? FALLBACK_GATEWAY_PORT)
+    const port = Number.isInteger(requested) && requested > 1024 && requested < 65536
+      ? requested
+      : FALLBACK_GATEWAY_PORT
+    // 目标端口已在监听：说明网关已经就绪（可能是别处起的），直接用。
+    if (await isPortOpen(port)) {
+      return { running: true, address: { host: '127.0.0.1', port }, apiKey: readGatewayKey(), spawned: false }
+    }
+    // 同一进程只起一次；重复调用复用同一个 Promise。
+    if (gatewayStarting === null) {
+      gatewayStarting = startGatewayOn(port).catch((error) => {
+        gatewayStarting = null
+        throw error
+      })
+    }
+    await gatewayStarting
+    const running = await isPortOpen(port)
+    return {
+      running,
+      address: { host: '127.0.0.1', port },
+      apiKey: readGatewayKey(),
+      spawned: true,
+    }
+  },
   // 其余方法一律原样转发，避免桥接层成为能力瓶颈。
   async forward(method, payload) {
     return await rpc(method, payload)
@@ -303,6 +469,7 @@ async function main() {
   try {
     const info = await load()
     emit({ ready: true, channels: CHANNELS, pack: info.name, path: PACK,
+           patched: info.patched,
            credentials: credentialsReady, attachments: attachmentsReady })
   } catch (error) {
     emit({ ready: false, error: String(error?.message ?? error) })
@@ -314,9 +481,15 @@ async function main() {
   let queue = Promise.resolve()
   const drainIfDone = () => {
     if (closing !== null && inFlight === 0) {
-      queue.then(() => process.exit(0))
+      queue.then(() => { killGatewayChild(); process.exit(0) })
     }
   }
+  // 桥被强杀/父进程消失时也要带走网关子进程，否则孤儿会占着 18326，
+  // 下一次 ensure 会误判「已在运行」而连到一个即将死掉的监听。
+  process.on('exit', killGatewayChild)
+  process.on('SIGTERM', () => { killGatewayChild(); process.exit(0) })
+  process.on('SIGINT', () => { killGatewayChild(); process.exit(0) })
+  process.on('SIGHUP', () => { killGatewayChild(); process.exit(0) })
   rl.on('line', (line) => {
     const text = line.trim()
     if (!text) return

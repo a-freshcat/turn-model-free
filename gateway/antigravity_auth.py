@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -44,6 +45,76 @@ def model_pool(name: str, id_: str = "") -> str:
     if "claude" in identity or "gpt" in identity:
         return "claude_gpt"
     return "gemini_shared"
+
+
+# 上游 resetTime 的两种形状：
+#   1) ISO 8601（`2026-11-06T10:33:19Z`）—— 直接用；
+#   2) 本地化文本（`6/11/2026 下午 6:33:19`）—— 月/日顺序随区域设置，**不可猜**。
+# 第 2 种用 day/month 两种解释各算一次，取「不早于现在」里较早的那个：
+# 重置时间必然在未来，把已经过去的解释丢掉就唯一确定了。
+_LOCALIZED = re.compile(
+    r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})\s*(上午|下午|AM|PM)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _reset_epoch(raw) -> float | None:
+    """把上游 resetTime 归一成 epoch 秒；认不出返回 None（前端显示「未知」）。
+
+    绝不返回一个「猜出来」的时间：错的重置时间比没有更糟——它会让人以为配额
+    刚刚重置过，从而误判账号是不是还有额度。
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+
+    # 形状 1：ISO 8601（含 Z / 时区偏移）
+    iso = text.replace("Z", "+00:00")
+    candidate = iso
+    try:
+        stamp = datetime.fromisoformat(candidate)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.timestamp()
+    except ValueError:
+        pass
+
+    # 形状 2：本地化文本
+    found = _LOCALIZED.match(text)
+    if not found:
+        return None
+    first, second, year, meridiem, hour, minute, second_text = found.groups()
+    hour = int(hour)
+    minute = int(minute)
+    sec = int(second_text or 0)
+    if meridiem:
+        afternoon = meridiem in ("下午", "PM", "pm")
+        if hour == 12:
+            hour = 12 if afternoon else 0
+        elif afternoon:
+            hour += 12
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= sec <= 59):
+        return None
+
+    now = time.time()
+    options = []
+    for day, month in ((int(first), int(second)), (int(second), int(first))):
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            continue
+        try:
+            stamp = datetime(int(year), month, day, hour, minute, sec).timestamp()
+        except ValueError:
+            continue
+        options.append(stamp)
+    if not options:
+        return None
+    future = [stamp for stamp in options if stamp >= now - 60]
+    if future:
+        return min(future)
+    # 两种解释都已在过去：说明这是「已过期的重置点」，取较晚的那个更接近事实。
+    return max(options)
 
 
 class OAuthFailure(Exception):
@@ -319,6 +390,11 @@ class AntigravityAuth:
                 "name": str(meta.get("displayName") or id_)[:256],
                 "remaining": round(remaining * 100, 2) if valid else None,
                 "reset_time": str(quota.get("resetTime") or "")[:64],
+                # 上游的 resetTime 是**本地化字符串**（`6/11/2026 下午 6:33:19`），
+                # 月/日顺序在不同区域设置下会反过来：浏览器按美式读成 6 月 11 日，
+                # 而它其实是 11 月 6 日，于是倒计时算出「已到时间」这种假读数。
+                # 这里补一个不依赖区域设置的 epoch 秒，前端只用它做倒计时。
+                "reset_at": _reset_epoch(quota.get("resetTime")),
                 "pool": model_pool(str(meta.get("displayName") or id_), id_),
             }
         credential["catalog"] = sanitized

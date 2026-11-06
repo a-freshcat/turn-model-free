@@ -30,3 +30,6 @@ commit-msg*.txt
 
 # Skill connection secrets stay local.
 skills/**/config.json
+# channel-pack 的已打补丁副本（由 gateway/scripts/patch-raccoon-cooldown.mjs
+# 从已安装插件现算生成，近 3MB）。它不是源码，重建即可，不入库。
+gateway/.pack/

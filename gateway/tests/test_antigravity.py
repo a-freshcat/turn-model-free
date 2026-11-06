@@ -191,7 +191,8 @@ class AntigravityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("refresh_token", response.text)
         page = await self.client.get("/quota")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("quota.mjs", page.text)
+        # 配额看板已并入控制台；旧地址保留为别名，内容必须是同一份控制台。
+        self.assertIn("console.mjs", page.text)
         models = (await self.rpc("model.list", {"provider": "antigravity"})).json()["value"]["models"]
         self.assertTrue(any(row["name"] == "Gemini 4 Argon (High)" for row in models))
 

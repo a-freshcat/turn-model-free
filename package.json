@@ -1,9 +1,9 @@
 {
   "name": "turn-model-free",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "type": "module",
-  "description": "「白嫖模型接入」页面的独立抄写版（页面代码逐字节抄自 dsh-our-free-model 2.5.4 的 client.js），并把该插件的腾讯渠道 11128 防护层一并移植、接成可运行的请求管道；附带假渠道包、离线演示页，以及与已安装插件的渲染/行为对比测试。",
+  "description": "本机模型账号管理与 OpenAI 兼容 API 网关，提供原创桌面控制台、账号与配额展示，支持桌面和网页两种启动方式；插件渠道基于 dsh-our-free-model。",
   "scripts": {
     "extract": "node scripts/extract.mjs && node scripts/extract-theme.mjs",
     "extract:guard": "node scripts/merge-guard.mjs",

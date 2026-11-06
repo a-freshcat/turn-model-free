@@ -201,23 +201,47 @@ mimetypes.add_type("text/javascript", ".mjs")
 app.mount("/assets", StaticFiles(directory=ROOT / "web"), name="assets")
 
 
+CSP = ("default-src 'self'; script-src 'self'; "
+       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+       "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+NO_STORE = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": CSP,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def console_page():
+    """本机号池控制台。
+
+    页面上每个数字都来自 `/ui/quota`（配额与重置时刻）、`/ui/state`（并发、
+    失败计数、冷却）、`/ui/protection`（调用保护）与 `provider.status`（各渠道
+    账号与模型统计）。页面自身不含任何写死的账号、状态或百分比——旧界面把
+    「示例数据」和「真实读数」混在一张表里，用户没法分辨哪一格是真的。
+    """
+    return FileResponse(ROOT / "web" / "console.html", headers=dict(NO_STORE))
+
+
 @app.get("/", include_in_schema=False)
-@app.get("/connect", include_in_schema=False)
 async def dashboard():
-    return FileResponse(ROOT / "web" / "index.html", headers={
-        "Cache-Control": "no-store",
-        "Content-Security-Policy": "default-src 'self'; script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
-        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
-        "Referrer-Policy": "no-referrer",
-        "X-Content-Type-Options": "nosniff",
-    })
+    return console_page()
 
 
 @app.get("/quota", include_in_schema=False)
 async def quota_page():
-    response = await dashboard()
-    return FileResponse(ROOT / "web" / "quota.html", headers=dict(response.headers))
+    """配额看板已并入控制台；旧地址保留，免得收藏夹和旧链接失效。"""
+    return console_page()
+
+
+@app.get("/connect", include_in_schema=False)
+async def connect_page():
+    """导入窗口：只承载「自有兼容上游」的填表，不再是渠道卡片入口。
+
+    12 家渠道的添加走厂商自己的登录页，从控制台的「渠道接入」发起；
+    把导入表单混进那条流程会出现「点登录却弹出配置表」的矛盾。
+    """
+    return FileResponse(ROOT / "web" / "connect.html", headers=dict(NO_STORE))
 
 
 def auth_error(request: Request) -> JSONResponse | None:

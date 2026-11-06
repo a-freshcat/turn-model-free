@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。提供独立桌面客户端与网页端双模式，统一管理账号、查看三个独立配额池用量、选择模型并接入各类 OpenAI 兼容客户端。
 
-**当前版本：v1.3.0** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.3.1** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
 
 
 ## 只用技能，接入现成网关
@@ -19,18 +19,18 @@
 - **账号管理**：添加、启停、刷新、测试账号，查看可用模型与渠道能力。
 - **Antigravity 原生接入**：Google OAuth 登录、令牌续期、模型目录和配额查询。
 - **插件渠道接入**：通过本机 DSH 插件桥接登录、账号、积分和模型，对话由插件网关转发。
-- **配额看板**：按渠道和账号筛选，展示状态、积分套餐、用量条和重置时间。
+- **原创控制台**：淡粉纸感桌面界面，汇总本机与插件渠道账号、实时状态、积分与三个独立配额池的重置倒计时。
 - **本机账号池**：轮询、单号并发限制、冷却和输出前故障切换；插件渠道的调度由插件负责。
 
 ## 环境要求
 
 - Python **3.10+**。
-- 使用 DSH 插件渠道时，需要 **Node.js 22+**、已安装的 `dsh-our-free-model` 插件，以及正在运行的插件 OpenAI 网关。
+- 使用 DSH 插件渠道时，需要 **Node.js 22+** 及已安装的 `dsh-our-free-model` 插件。DSH 自带网关未启动时，本程序会在本机备用端口拉起同源网关。
 - 仅使用 Antigravity 或导入 OpenAI 兼容上游时，无需启用插件渠道。
 
 ## 安装与启动
 
-下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.3.0.zip` 桌面端与 `turn-model-free-web-v1.3.0.zip` 网页端独立包），或克隆仓库：
+下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.3.1.zip` 桌面端与 `turn-model-free-web-v1.3.1.zip` 网页端独立包），或克隆仓库：
 
 ```powershell
 git clone https://github.com/a-freshcat/turn-model-free.git
@@ -41,7 +41,7 @@ gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
 ```
 
 首次安装依赖后：
-- 双击根目录 **`launch-desktop.cmd`**：启动独立原生桌面窗口（基于 WebView2，关闭窗口自动回收服务，启动时自动接管旧端口）；
+- 双击根目录 **`launch-desktop.cmd`**：启动独立原生桌面窗口（基于 WebView2），同时在命令行显示网关地址和 Key；关闭窗口后回收服务；
 - 双击根目录 **`launch-web.cmd`**：启动网页端管理页（**http://127.0.0.1:8199/**）。
 
 更换端口或仅启动后台服务：

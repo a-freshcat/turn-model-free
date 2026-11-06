@@ -1,0 +1,1291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>turn-model-free · 号池总览</title>
+<style>
+  /* ============ 设计令牌：纸感米白 + 靛蓝单主色 ============ */
+  :root {
+    --paper:        #f7f5f2;
+    --paper-deep:   #f0ede8;
+    --surface:      #fffefb;
+    --surface-alt:  #faf8f5;
+    --line:         #e6e1d9;
+    --line-soft:    #efeae2;
+
+    --ink:          #2a2723;
+    --ink-2:        #5c5650;
+    --ink-3:        #8f8880;
+
+    --accent:       #a85664;
+    --accent-deep:  #8c4450;
+    --accent-wash:  #f9edef;
+    --accent-edge:  #ecd3d8;
+
+    --jade:         #2f9c72;
+    --jade-wash:    #e6f4ee;
+    --cinnabar:     #c4472f;
+    --cinnabar-wash:#fbeae6;
+    --amber:        #b8822e;
+    --amber-wash:   #f9f0e0;
+
+    --r-sm: 6px;
+    --r-md: 10px;
+
+    --shadow-sm: 0 1px 2px rgba(42,39,35,.05);
+
+    --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .win { height: 100%; display: grid; grid-template-rows: 38px auto 1fr; overflow: hidden; }
+
+  /* --- 集成标题栏 --- */
+  .titlebar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 6px 0 14px;
+    background: var(--paper-deep);
+    border-bottom: 1px solid var(--line);
+    user-select: none;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12.5px; }
+  .brand-mark {
+    width: 17px; height: 17px; border-radius: 5px;
+    background: linear-gradient(150deg, var(--accent) 0%, var(--accent-deep) 100%);
+    color: #fff; display: grid; place-items: center;
+    font-size: 10px; font-weight: 700;
+  }
+  .brand-sub { color: var(--ink-3); font-size: 11.5px; font-weight: 400; padding-left: 2px; }
+  .titlebar-spacer { flex: 1; }
+
+  .tb-status {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--ink-2);
+    padding: 3px 9px;
+    border: 1px solid var(--line);
+    border-radius: 99px;
+    background: var(--surface);
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--jade); box-shadow: 0 0 0 2.5px var(--jade-wash); }
+  .dot.paused { background: var(--amber); box-shadow: 0 0 0 2.5px var(--amber-wash); }
+  .dot.err    { background: var(--cinnabar); box-shadow: 0 0 0 2.5px var(--cinnabar-wash); }
+
+  .win-controls { display: flex; margin-left: 6px; }
+  .win-btn {
+    width: 36px; height: 30px; border: 0; background: none;
+    color: var(--ink-2); display: grid; place-items: center;
+    font-size: 12px; cursor: pointer; border-radius: 5px;
+  }
+  .win-btn:hover { background: rgba(42,39,35,.06); }
+  .win-btn.close:hover { background: var(--cinnabar); color: #fff; }
+
+  /* --- KPI --- */
+  .kpi-strip {
+    display: flex; align-items: stretch;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    padding: 0 6px; overflow-x: auto;
+  }
+  .kpi {
+    display: flex; align-items: baseline; gap: 7px;
+    padding: 11px 18px;
+    border-right: 1px solid var(--line-soft);
+    white-space: nowrap;
+  }
+  .kpi:last-child { border-right: 0; }
+  .kpi-val { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.4px; }
+  .kpi-val small { font-size: 12px; font-weight: 500; color: var(--ink-3); }
+  .kpi-label { font-size: 11.5px; color: var(--ink-3); }
+  .kpi-spacer { flex: 1; }
+  .kpi-actions { display: flex; align-items: center; gap: 7px; padding: 8px 14px 8px 8px; }
+
+  /* ============ 三栏 ============ */
+  .body { display: grid; grid-template-columns: 178px minmax(0,1fr) 268px; min-height: 0; }
+
+  /* --- 左窄轨 --- */
+  .rail {
+    background: var(--paper-deep);
+    border-right: 1px solid var(--line);
+    padding: 12px 9px;
+    display: flex; flex-direction: column; gap: 2px;
+    overflow-y: auto;
+  }
+  .rail-group-label { font-size: 10.5px; color: var(--ink-3); letter-spacing: .6px; padding: 10px 9px 5px; }
+  .rail-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 9px; border-radius: var(--r-sm);
+    color: var(--ink-2); cursor: pointer; border: 0; background: none;
+    font: inherit; font-size: 12.5px; text-align: left; width: 100%;
+    transition: background .12s ease, color .12s ease;
+  }
+  .rail-item:hover { background: rgba(168,86,100,.07); color: var(--ink); }
+  .rail-item.on { background: var(--accent-wash); color: var(--accent-deep); font-weight: 600; }
+  .rail-ico { width: 15px; height: 15px; flex: 0 0 15px; opacity: .72; display: grid; place-items: center; }
+  .rail-item.on .rail-ico { opacity: 1; }
+  .rail-count { margin-left: auto; font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .rail-item.on .rail-count { color: var(--accent); }
+
+  .rail-foot {
+    margin-top: auto; padding-top: 10px;
+    border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--ink-3);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .rail-foot-row { display: flex; justify-content: space-between; gap: 8px; }
+  .rail-foot-row b { color: var(--ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  /* --- 主区 --- */
+  .main { min-width: 0; overflow-y: auto; padding: 16px 20px 26px; }
+
+  .main-head { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; flex-wrap: wrap; }
+  .main-title { font-size: 15px; font-weight: 600; letter-spacing: -.1px; }
+  .main-title-note { font-size: 11.5px; color: var(--ink-3); padding-left: 2px; }
+  .main-head-spacer { flex: 1; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 29px; padding: 0 11px;
+    font: inherit; font-size: 12.5px;
+    color: var(--ink-2); background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--r-sm);
+    cursor: pointer; white-space: nowrap;
+    transition: border-color .12s, background .12s, color .12s;
+  }
+  .btn:hover { border-color: #d6cfc4; color: var(--ink); background: var(--surface-alt); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  .btn.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+  .btn.ghost { background: none; border-color: transparent; color: var(--ink-3); }
+  .btn.ghost:hover { background: rgba(42,39,35,.05); color: var(--ink-2); }
+
+  .search { position: relative; display: flex; align-items: center; }
+  .search input {
+    height: 29px; width: 176px;
+    padding: 0 10px 0 29px;
+    font: inherit; font-size: 12.5px; color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--r-sm);
+    outline: none;
+    transition: border-color .12s, box-shadow .12s, width .16s;
+  }
+  .search input::placeholder { color: var(--ink-3); }
+  .search input:focus { border-color: var(--accent-edge); box-shadow: 0 0 0 3px rgba(168,86,100,.11); width: 208px; }
+  .search svg { position: absolute; left: 9px; pointer-events: none; opacity: .45; }
+
+  /* --- 名册 --- */
+  .roster {
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    background: var(--surface); box-shadow: var(--shadow-sm); overflow: hidden;
+  }
+
+  .roster-head, .acct {
+    display: grid;
+    grid-template-columns: minmax(0,1.62fr) minmax(184px,1fr) 96px 150px;
+    gap: 18px;
+    align-items: center;
+  }
+  .roster-head {
+    padding: 8px 16px;
+    background: var(--surface-alt);
+    border-bottom: 1px solid var(--line);
+    font-size: 11px; color: var(--ink-3); letter-spacing: .3px;
+  }
+  .acct {
+    padding: 15px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    transition: background .12s;
+  }
+  .acct:last-child { border-bottom: 0; }
+  .acct:hover { background: var(--surface-alt); }
+  .acct.off { opacity: .6; }
+
+  .acct-id { display: flex; align-items: center; gap: 11px; min-width: 0; }  .acct-avatar {
+    width: 34px; height: 34px; flex: 0 0 34px;
+    border-radius: 8px;
+    background: var(--paper-deep);
+    border: 1px solid var(--line);
+    display: grid; place-items: center; overflow: hidden;
+  }
+  .acct-avatar img { width: 25px; height: 25px; object-fit: contain; display: block; }
+  .acct-meta { min-width: 0; }
+  .acct-name {
+    font-size: 12.8px; font-weight: 600; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    letter-spacing: -.1px;
+  }
+  .acct-tags { display: flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+  .tag {
+    font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+    background: var(--paper-deep); color: var(--ink-3);
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .tag.channel { background: var(--accent-wash); color: var(--accent-deep); border-color: var(--accent-edge); }
+  .tag .mono { font-family: var(--mono); font-size: 10px; }
+
+  /* 配额池：条长 = 剩余 */
+  .pools { display: flex; flex-direction: column; gap: 6px; }
+  .pool { display: grid; grid-template-columns: 48px minmax(0,1fr) 34px; align-items: center; gap: 9px; }
+  .pool-name { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
+  .track {
+    height: 5px; border-radius: 99px;
+    background: var(--line-soft);
+    overflow: hidden; position: relative;
+  }
+  .fill { height: 100%; border-radius: 99px; background: var(--accent); transition: width .35s cubic-bezier(.2,.8,.3,1); }
+  .fill.warn { background: var(--amber); }
+  .fill.low  { background: var(--cinnabar); }
+  .track.none {
+    background-image: repeating-linear-gradient(45deg, var(--line-soft) 0 3px, transparent 3px 6px);
+    background-color: transparent;
+  }
+  .pool-pct { font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; font-family: var(--mono); }
+  .pool-pct.low  { color: var(--cinnabar); font-weight: 600; }
+  .pool-pct.none { color: var(--ink-3); font-family: var(--sans); font-size: 10px; }
+
+  /* 状态 + 并发 */
+  .state-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
+  .state {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; padding: 2px 8px;
+    border-radius: 99px; white-space: nowrap;
+  }
+  .state.ok   { background: var(--jade-wash);     color: #22795a; }
+  .state.cool { background: var(--amber-wash);    color: var(--amber); }
+  .state.stop { background: var(--paper-deep);    color: var(--ink-3); }
+  .state.err  { background: var(--cinnabar-wash); color: var(--cinnabar); }
+  .state i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; display: block; }
+
+  .conc { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .conc b { color: var(--ink); font-weight: 600; }
+  .conc span { color: var(--ink-3); }
+  .conc em { font-style: normal; color: var(--cinnabar); font-size: 10.5px; padding-left: 4px; }
+
+  /* 行末动作 */
+  .row-actions { display: flex; align-items: center; gap: 5px; justify-content: flex-end; }
+  .mini {
+    width: 27px; height: 27px;
+    display: grid; place-items: center;
+    border: 1px solid var(--line); background: var(--surface);
+    border-radius: var(--r-sm); color: var(--ink-3);
+    cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .mini:hover { border-color: var(--accent-edge); color: var(--accent); background: var(--accent-wash); }
+  .mini.danger:hover { border-color: #eccac2; color: var(--cinnabar); background: var(--cinnabar-wash); }
+  .mini svg { display: block; }
+  .mini:disabled { opacity: .45; cursor: default; }
+
+  .switch {
+    width: 34px; height: 19px; border-radius: 99px;
+    background: var(--line); border: 0; position: relative;
+    cursor: pointer; transition: background .16s; flex: 0 0 34px;
+  }
+  .switch::after {
+    content: ""; position: absolute;
+    top: 2.5px; left: 2.5px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.18);
+    transition: transform .16s;
+  }
+  .switch[aria-checked="true"] { background: var(--accent); }
+  .switch[aria-checked="true"]::after { transform: translateX(15px); }
+
+  /* 空态 / 错误 */
+  .notice {
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    background: var(--surface-alt);
+    padding: 22px 18px; text-align: center;
+    font-size: 12.5px; color: var(--ink-2);
+  }
+  .notice.bad { background: var(--cinnabar-wash); border-color: #eccac2; color: var(--cinnabar); }
+  .notice b { display: block; margin-bottom: 5px; font-size: 13px; }
+  .notice code { font-family: var(--mono); font-size: 11px; background: var(--paper-deep); padding: 1px 5px; border-radius: 4px; color: var(--ink-2); }
+
+  /* 未接入渠道 */
+  .idle-channels {
+    margin-top: 16px;
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    background: var(--surface-alt);
+    padding: 13px 16px;
+  }
+  .idle-title { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); font-weight: 600; margin-bottom: 10px; }
+  .idle-title span { font-weight: 400; color: var(--ink-3); font-size: 11.5px; }
+  .idle-list { display: flex; flex-wrap: wrap; gap: 7px; }
+  .idle-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 26px; padding: 0 9px 0 6px;
+    font-size: 11.5px; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 99px; cursor: pointer;
+    transition: border-color .12s, color .12s;
+  }
+  .idle-chip:hover { border-color: var(--accent-edge); color: var(--accent-deep); }
+  .idle-chip img { width: 15px; height: 15px; object-fit: contain; }
+  .idle-chip em { font-style: normal; font-size: 10px; color: var(--ink-3); padding-left: 2px; }
+
+  /* --- 右监视 --- */
+  .watch {
+    border-left: 1px solid var(--line);
+    background: var(--surface-alt);
+    padding: 14px 13px;
+    display: flex; flex-direction: column; gap: 14px;
+    overflow-y: auto; min-height: 0;
+  }
+  .watch-h { font-size: 11px; color: var(--ink-3); letter-spacing: .5px; display: flex; align-items: center; justify-content: space-between; }
+  .watch-h b { color: var(--ink-2); font-weight: 500; font-size: 10.5px; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+
+  /* 池水位 */
+  .water-row {
+    display: grid; grid-template-columns: 44px minmax(0,1fr) 34px;
+    gap: 8px; align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 10.5px;
+  }
+  .water-row:last-child { border-bottom: 0; }
+  .water-name { color: var(--ink-3); }
+  .water-pct { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-2); }
+
+  /* 重置时间 */
+  .reset-row {
+    display: flex; justify-content: space-between; gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px dashed var(--line-soft);
+    font-size: 10.5px;
+  }
+  .reset-row:last-child { border-bottom: 0; }
+  .reset-row span { color: var(--ink-3); }
+  .reset-row b { color: var(--ink-2); font-weight: 500; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* 接入 */
+  .access-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 6px 10px;
+    border-bottom: 1px dashed var(--line-soft);
+    font-size: 11px;
+  }
+  .access-row:last-child { border-bottom: 0; }
+  .access-row span { color: var(--ink-3); flex: 0 0 auto; }
+  .access-row code {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+    background: var(--paper-deep); padding: 1px 5px; border-radius: 4px;
+    overflow: hidden; text-overflow: ellipsis; max-width: 124px; white-space: nowrap;
+  }
+  .access-row button { border: 0; background: none; cursor: pointer; color: var(--accent); font: inherit; font-size: 10.5px; padding: 0 2px; }
+  .access-row button:hover { text-decoration: underline; }
+
+  /* 滚动条 */
+  .main::-webkit-scrollbar, .watch::-webkit-scrollbar, .rail::-webkit-scrollbar { width: 9px; }
+  .main::-webkit-scrollbar-thumb, .watch::-webkit-scrollbar-thumb, .rail::-webkit-scrollbar-thumb {
+    background: #ddd6cc; border-radius: 99px; border: 3px solid transparent; background-clip: content-box;
+  }
+
+  /* ---- 夜间纸 ---- */
+  body[data-theme="night"] {
+    --paper:        #22252b;
+    --paper-deep:   #1c1f24;
+    --surface:      #282c33;
+    --surface-alt:  #24282f;
+    --line:         #363b44;
+    --line-soft:    #2f343c;
+    --ink:          #e8e4dc;
+    --ink-2:        #a9a49b;
+    --ink-3:        #7a756d;
+    --accent:       #d9a3ac;
+    --accent-deep:  #e6b9c1;
+    --accent-wash:  #332428;
+    --accent-edge:  #4a3136;
+    --jade:         #4bbd8d;
+    --jade-wash:    #223d33;
+    --cinnabar:     #e07764;
+    --cinnabar-wash:#3c2a26;
+    --amber:        #d2a355;
+    --amber-wash:   #3a3223;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
+  }
+  body[data-theme="night"] .state.ok { color: #62d3a4; }
+  body[data-theme="night"] .switch::after { background: #f2efe9; }
+  body[data-theme="night"] .main::-webkit-scrollbar-thumb { background: #3b4149; background-clip: content-box; }
+  body[data-theme="night"] .btn:hover { border-color: #444b56; }
+
+  @media (max-width: 1120px) {
+    .body { grid-template-columns: 160px minmax(0,1fr); }
+    .watch { display: none; }
+    .roster-head, .acct { grid-template-columns: minmax(0,1.4fr) minmax(176px,1fr) 112px 148px; }
+  }
+
+  /* ---- 连接本机网关 ---- */
+  .connect-scrim {
+    position: fixed; inset: 0; z-index: 40;
+    background: rgba(42,39,35,.34);
+    backdrop-filter: blur(2px);
+    display: grid; place-items: center;
+    padding: 24px;
+  }
+  .connect-scrim[hidden] { display: none; }
+  .connect-card {
+    width: min(360px, 100%);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    box-shadow: 0 18px 48px rgba(42,39,35,.18);
+    padding: 20px;
+  }
+  .connect-title {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 14px; font-weight: 600; margin-bottom: 8px;
+  }
+  .connect-note { font-size: 11.5px; color: var(--ink-3); margin: 0 0 14px; line-height: 1.6; }
+  .connect-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+  .connect-field span { font-size: 11.5px; color: var(--ink-2); }
+  .connect-field input {
+    height: 32px; padding: 0 10px;
+    font: inherit; font-size: 12.5px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-sm); outline: none;
+  }
+  .connect-field input:focus { border-color: var(--accent-edge); box-shadow: 0 0 0 3px rgba(168,86,100,.11); }
+  .connect-error { font-size: 11.5px; color: var(--cinnabar); min-height: 16px; margin: 0 0 10px; }
+  .connect-card .btn { width: 100%; justify-content: center; }
+
+  /* 密钥获取提示 */
+  .connect-help {
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-alt);
+    padding: 8px 10px;
+    margin: 0 0 11px;
+    font-size: 11.5px;
+  }
+  .connect-help > summary {
+    cursor: pointer;
+    color: var(--accent-deep);
+    font-weight: 500;
+    padding: 1px 0;
+    list-style: none;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .connect-help > summary::-webkit-details-marker { display: none; }
+  .connect-help > summary::before {
+    content: "?";
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent-wash);
+    color: var(--accent-deep);
+    font-size: 9.5px;
+    display: grid; place-items: center;
+    font-weight: 700;
+  }
+  .connect-help[open] > summary { margin-bottom: 8px; }
+
+  .connect-steps {
+    margin: 0;
+    padding-left: 17px;
+    color: var(--ink-2);
+    line-height: 1.75;
+  }
+  .connect-steps li { margin-bottom: 6px; }
+  .connect-steps li:last-child { margin-bottom: 0; }
+  .connect-steps b { color: var(--ink); font-weight: 600; }
+  .connect-steps code {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    background: var(--paper-deep);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .inline-copy {
+    border: 0; background: none; cursor: pointer;
+    color: var(--accent); font: inherit; font-size: 10.5px;
+    padding: 0 2px; margin-left: 2px;
+  }
+  .inline-copy:hover { text-decoration: underline; }
+  .connect-help-foot {
+    margin: 8px 0 0;
+    padding-top: 7px;
+    border-top: 1px dashed var(--line);
+    font-size: 10.5px;
+    color: var(--ink-3);
+    line-height: 1.6;
+  }
+  .connect-help-foot code { font-family: var(--mono); font-size: 10px; color: var(--ink-2); }
+</style>
+</head>
+<body data-theme="paper">
+<div class="win">
+
+  <!-- 连接本机网关 -->
+  <div class="connect-scrim" id="connect-scrim" hidden>
+    <form class="connect-card" id="connect-form">
+      <div class="connect-title"><span class="brand-mark">t</span> 连接本机网关</div>
+      <p class="connect-note">输入网关密钥后即可读取本机号池。密钥只在本机做会话校验，不会离开这台机器。</p>
+
+      <label class="connect-field">
+        <span>网关密钥</span>
+        <input type="password" id="connect-key" autocomplete="off" required placeholder="粘贴网关密钥">
+      </label>
+
+      <details class="connect-help">
+        <summary>密钥在哪里？</summary>
+        <ol class="connect-steps">
+          <li>
+            <b>启动窗口</b>：双击 <code>launch-desktop.cmd</code> / <code>launch-web.cmd</code> 后，
+            黑窗口会打印一行 <code>Gateway key: …</code>，直接复制那串。
+          </li>
+          <li>
+            <b>密钥文件</b>：已保存的密钥就在
+            <code id="key-path">gateway\.gateway-api-key</code>
+            <button type="button" class="inline-copy" id="copy-key-path">复制路径</button>
+          </li>
+          <li>
+            <b>环境变量</b>：如果你自己指定过 <code>GATEWAY_API_KEY</code>，那就是你设的那个值。
+          </li>
+          <li>
+            <b>忘了想换一个</b>：删掉上面那个密钥文件并重启网关，会重新生成一个新密钥。
+          </li>
+        </ol>
+        <p class="connect-help-foot">
+          当前地址：<code id="origin-hint">—</code> · 会话只在本次浏览器有效，8 小时后过期。
+        </p>
+      </details>
+
+      <p class="connect-error" id="connect-error" role="alert"></p>
+      <button class="btn primary" type="submit" id="connect-submit">连接</button>
+    </form>
+  </div>
+
+  <!-- 标题栏 -->
+  <div class="titlebar">
+    <div class="brand">
+      <span class="brand-mark">t</span>
+      <span>turn-model-free</span>
+      <span class="brand-sub">本机模型网关</span>
+    </div>
+    <div class="titlebar-spacer"></div>
+    <div class="tb-status" id="tb-status"><i class="dot"></i><span>正在连接…</span></div>
+    <div class="win-controls">
+      <button class="win-btn" title="最小化">—</button>
+      <button class="win-btn" title="最大化">□</button>
+      <button class="win-btn close" title="关闭">✕</button>
+    </div>
+  </div>
+
+  <!-- KPI -->
+  <div class="kpi-strip">
+    <div class="kpi"><span class="kpi-val" id="kpi-online">—</span><span class="kpi-label">账号在线</span></div>
+    <div class="kpi"><span class="kpi-val" id="kpi-models">—</span><span class="kpi-label">模型可用</span></div>
+    <div class="kpi"><span class="kpi-val" id="kpi-conc">—</span><span class="kpi-label">并发占用</span></div>
+    <div class="kpi"><span class="kpi-val" id="kpi-fail">—</span><span class="kpi-label">失败计数</span></div>
+    <div class="kpi"><span class="kpi-val" id="kpi-updated" style="font-size:13px">—</span><span class="kpi-label">配额最近查询</span></div>
+    <div class="kpi-spacer"></div>
+    <div class="kpi-actions">
+      <button class="btn ghost" id="theme-toggle" title="切换夜间纸">◐ 夜间</button>
+      <button class="btn" id="reload">刷新</button>
+      <button class="btn primary">＋ 添加账号</button>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <!-- 左侧窄轨 -->
+    <nav class="rail">
+      <div class="rail-group-label">号池</div>
+      <button class="rail-item on"><span class="rail-ico">▦</span>号池总览<span class="rail-count" id="rail-accts">—</span></button>
+      <button class="rail-item"><span class="rail-ico">⌸</span>渠道接入<span class="rail-count">11</span></button>
+      <button class="rail-item"><span class="rail-ico">◈</span>模型目录<span class="rail-count" id="rail-models">—</span></button>
+
+      <div class="rail-group-label">运维</div>
+      <button class="rail-item"><span class="rail-ico">≡</span>运行日志</button>
+      <button class="rail-item"><span class="rail-ico">⚙</span>设置</button>
+
+      <div class="rail-foot">
+        <div class="rail-foot-row"><span>调用保护</span><b id="foot-guard">—</b></div>
+        <div class="rail-foot-row"><span>并发上限</span><b id="foot-conc">—</b></div>
+        <div class="rail-foot-row"><span>监听</span><b>127.0.0.1</b></div>
+      </div>
+    </nav>
+
+    <!-- 主区 -->
+    <main class="main">
+      <div class="main-head">
+        <div class="main-title">号池总览</div>
+        <div class="main-title-note" id="main-note">读取中…</div>
+        <div class="main-head-spacer"></div>
+        <label class="search">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5 14 14"></path>
+          </svg>
+          <input type="search" id="filter" placeholder="搜索账号…" autocomplete="off">
+        </label>
+        <button class="btn" id="probe-all">探活全部</button>
+      </div>
+
+      <div id="roster-host">
+        <div class="notice">正在读取本机号池…</div>
+      </div>
+
+      <div class="idle-channels">
+        <div class="idle-title">其他渠道 <span>未接入 · 点选即启动对应授权流程</span></div>
+        <div class="idle-list" id="idle-list"></div>
+      </div>
+    </main>
+
+    <!-- 右监视 -->
+    <aside class="watch">
+      <div>
+        <div class="watch-h">各池最低剩余 <b>取池内最低值</b></div>
+        <div class="card" id="water-card">
+          <div class="water-row"><span class="water-name">读取中</span><div></div><span class="water-pct">—</span></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="watch-h">最早重置时间</div>
+        <div class="card" id="reset-card">
+          <div class="reset-row"><span>读取中</span><b>—</b></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="watch-h">客户端接入</div>
+        <div class="card">
+          <div class="access-row">
+            <span>Base URL</span>
+            <code id="api-base">—</code>
+            <button data-copy="api-base">复制</button>
+          </div>
+          <div class="access-row">
+            <span>API Key</span>
+            <code id="api-key">—</code>
+            <button data-copy="api-key">复制</button>
+          </div>
+          <div class="access-row">
+            <span>文档</span>
+            <code>/docs</code>
+            <button id="open-docs">打开</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<script type="module">
+/* ---------------- 主题 ---------------- */
+const body = document.body
+const themeBtn = document.getElementById('theme-toggle')
+const applyTheme = mode => {
+  body.dataset.theme = mode
+  themeBtn.textContent = mode === 'night' ? '◑ 日间' : '◐ 夜间'
+}
+applyTheme(localStorage.getItem('tmf:proto-theme') || 'paper')
+themeBtn.addEventListener('click', () => {
+  const next = body.dataset.theme === 'night' ? 'paper' : 'night'
+  localStorage.setItem('tmf:proto-theme', next)
+  applyTheme(next)
+})
+
+document.querySelectorAll('.rail-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.rail-item').forEach(i => i.classList.toggle('on', i === item))
+  })
+})
+
+/* ---------------- 图标 ---------------- */
+const CHANNEL_META = {
+  antigravity: { label: 'Antigravity', icon: 'antigravity.png' },
+  codearts:    { label: '华为 CodeArts', icon: 'codearts.png' },
+  buddy:       { label: '腾讯 WorkBuddy', icon: 'buddy.png', note: '国内' },
+  workbuddy:   { label: 'WorkBuddy', icon: 'workbuddy.png', note: '国际' },
+  qoder:       { label: '阿里 Qoder', icon: 'qoder.png' },
+  qodercn:     { label: '阿里 Qoder CN', icon: 'qodercn.png' },
+  cline:       { label: 'Cline 官方', icon: 'cline.png' },
+  raccoon:     { label: '商汤 Raccoon', icon: 'raccoon.png' },
+  zcode:       { label: '智谱 ZCode', icon: 'zcode.png' },
+  trae:        { label: '字节 TRAE', icon: null },
+  minimax:     { label: 'MiniMax Code', icon: null },
+  lobsterai:   { label: '有道 LobsterAI', icon: null },
+}
+const POOLS = [
+  { id: 'argon',         label: 'Argon' },
+  { id: 'claude_gpt',    label: 'Claude' },
+  { id: 'gemini_shared', label: 'Gemini' },
+]
+
+/* ---------------- 连接 ---------------- */
+const connectScrim = document.getElementById('connect-scrim')
+const connectForm = document.getElementById('connect-form')
+const connectError = document.getElementById('connect-error')
+
+// 让提示里的路径与地址跟随实际部署，而不是写死
+const here = location.origin
+document.getElementById('origin-hint').textContent = here
+document.getElementById('key-path').textContent = 'gateway\\.gateway-api-key'
+
+document.getElementById('copy-key-path').addEventListener('click', async event => {
+  event.preventDefault()
+  const btn = event.currentTarget
+  try {
+    await navigator.clipboard.writeText('gateway\\.gateway-api-key')
+    btn.textContent = '已复制'
+    setTimeout(() => { btn.textContent = '复制路径' }, 1200)
+  } catch {
+    btn.textContent = '请手动复制'
+    setTimeout(() => { btn.textContent = '复制路径' }, 1600)
+  }
+})
+
+function requireConnect(message = '') {
+  connectError.textContent = message
+  connectScrim.hidden = false
+  setTimeout(() => document.getElementById('connect-key').focus(), 0)
+}
+
+connectForm.addEventListener('submit', async event => {
+  event.preventDefault()
+  const button = document.getElementById('connect-submit')
+  button.disabled = true
+  connectError.textContent = ''
+  try {
+    await api('/ui/session', {
+      method: 'POST',
+      headers: { Origin: location.origin },
+      body: JSON.stringify({ key: document.getElementById('connect-key').value }),
+    })
+    document.getElementById('connect-key').value = ''
+    connectScrim.hidden = true
+    await load()
+  } catch (error) {
+    connectError.textContent = error.message
+  } finally {
+    button.disabled = false
+  }
+})
+
+/* ---------------- API ---------------- */
+let connected = false
+
+async function api(path, options = {}) {
+  const { body, headers, ...rest } = options
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    ...rest,
+    headers: {
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(headers || {}),
+    },
+    ...(body === undefined ? {} : { body }),
+  })
+  const text = await response.text()
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = null }
+  if (!response.ok || (data && data.ok === false)) {
+    const message = data?.error?.message || data?.detail || `HTTP ${response.status}`
+    const error = new Error(message)
+    error.status = response.status
+    throw error
+  }
+  return data
+}
+
+/* ---------------- 工具 ---------------- */
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+))
+
+const fmtPct = value => (typeof value === 'number' && Number.isFinite(value)
+  ? (value >= 10 ? value.toFixed(1).replace(/\.0$/, '') : value.toFixed(2)) + '%'
+  : '未知')
+
+const shortId = id => {
+  const text = String(id || '')
+  if (text.length <= 14) return text
+  return text.slice(0, 6) + '…' + text.slice(-5)
+}
+
+const fmtTime = seconds => {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '—'
+  return new Date(seconds * 1000).toLocaleString('zh-CN', { hour12: false })
+}
+
+const fmtReset = raw => {
+  if (!raw) return '—'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return '—'
+  const now = new Date()
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  const hm = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  if (sameDay) return hm
+  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hm}`
+}
+
+const barClass = remaining => {
+  if (typeof remaining !== 'number' || !Number.isFinite(remaining)) return 'none'
+  if (remaining <= 10) return 'low'
+  if (remaining <= 35) return 'warn'
+  return ''
+}
+
+/* ---------------- 数据整理 ---------------- */
+function poolSummary(models, poolId) {
+  const rows = models.filter(model => model.pool === poolId)
+  const known = rows.filter(model => typeof model.remaining === 'number' && Number.isFinite(model.remaining))
+  if (!known.length) return { known: 0, total: rows.length, remaining: null, reset: '' }
+  let lowest = Infinity
+  let reset = ''
+  for (const model of known) {
+    if (model.remaining < lowest) lowest = model.remaining
+    if (model.reset_time) {
+      const t = new Date(model.reset_time).getTime()
+      if (Number.isFinite(t)) {
+        if (!reset || t < new Date(reset).getTime()) reset = model.reset_time
+      }
+    }
+  }
+  return { known: known.length, total: rows.length, remaining: lowest, reset }
+}
+
+function stateOf(account) {
+  const status = account.status || 'active'
+  if (status === 'active') return { cls: 'ok', text: '正常' }
+  if (status === 'disabled') return { cls: 'stop', text: '已暂停' }
+  if (status === 'reauth') return { cls: 'err', text: '需重登' }
+  if (status === 'cooldown') {
+    const sec = account.cooldown_remaining_seconds || 0
+    const text = sec >= 120 ? `冷却 ${Math.ceil(sec / 60)} 分` : (sec ? `冷却 ${sec}s` : '冷却中')
+    return { cls: 'cool', text }
+  }
+  return { cls: 'stop', text: status }
+}
+
+/* ---------------- 渲染 ---------------- */
+let model = { accounts: [], api_base: '', api_key: '' }
+let filterText = ''
+
+function renderRoster() {
+  const host = document.getElementById('roster-host')
+  const needle = filterText.trim().toLowerCase()
+  const visible = needle
+    ? model.accounts.filter(a => (a.name || '').toLowerCase().includes(needle))
+    : model.accounts
+
+  if (!model.accounts.length) {
+    host.innerHTML = `<div class="notice"><b>号池里还没有账号</b>点右上角「＋ 添加账号」登录 Antigravity，或导入已有兼容上游配置。</div>`
+    return
+  }
+  if (!visible.length) {
+    host.innerHTML = `<div class="notice">没有匹配「${esc(filterText)}」的账号。</div>`
+    return
+  }
+
+  const rows = visible.map(account => {
+    const meta = CHANNEL_META[account.provider] || { label: account.provider || '未知渠道', icon: null }
+    const state = stateOf(account)
+    const enabled = account.enabled !== false
+    const pools = POOLS.map(pool => {
+      const summary = poolSummary(account.models || [], pool.id)
+      const cls = barClass(summary.remaining)
+      const width = summary.remaining === null ? 0 : Math.max(0, Math.min(100, summary.remaining))
+      const trackCls = summary.remaining === null ? 'track none' : 'track'
+      const pctCls = 'pool-pct' + (summary.remaining === null ? ' none' : (cls === 'low' ? ' low' : ''))
+      return `<div class="pool">
+        <span class="pool-name">${esc(pool.label)}</span>
+        <div class="${trackCls}"><div class="fill ${cls}" style="width:${width}%"></div></div>
+        <span class="${pctCls}">${summary.remaining === null ? '未知' : fmtPct(summary.remaining)}</span>
+      </div>`
+    }).join('')
+
+    const inFlight = account.in_flight ?? 0
+    const maxConc = account.max_concurrency ?? 1
+    const failCount = account.fail_count ?? 0
+    const failNote = failCount > 0 ? `<em>失败 ${failCount}</em>` : ''
+    const modelCount = (account.models || []).length
+    const icon = meta.icon
+      ? `<img src="/assets/brand/${meta.icon}" alt="${esc(meta.label)}">`
+      : `<span style="font-size:11px;color:var(--ink-3);font-weight:600">${esc((meta.label || '?').slice(0, 1))}</span>`
+
+    return `<div class="acct${enabled ? '' : ' off'}" data-id="${esc(account.id)}">
+      <div class="acct-id">
+        <div class="acct-avatar">${icon}</div>
+        <div class="acct-meta">
+          <div class="acct-name" title="${esc(account.name || account.id)}">${esc(account.name || account.id)}</div>
+          <div class="acct-tags">
+            <span class="tag channel">${esc(meta.label)}</span>
+            <span class="tag"><span class="mono">${esc(shortId(account.id))}</span></span>
+            <span class="tag">${esc(account.driver === 'antigravity' ? 'OAuth' : (account.driver || 'token'))}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="pools">${pools}</div>
+
+      <div class="state-cell">
+        <span class="state ${state.cls}"><i></i>${esc(state.text)}</span>
+        <span class="conc"><b>${inFlight}</b><span>/${maxConc}</span>${failNote}</span>
+      </div>
+
+      <div class="row-actions">
+        <button class="mini" data-act="test" title="探活测速">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <path d="M2 8h3l2-4 2 8 2-4h3"></path>
+          </svg>
+        </button>
+        <button class="mini" data-act="models" title="模型 ${modelCount} 个">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <path d="M2.5 4h11M2.5 8h11M2.5 12h7"></path>
+          </svg>
+        </button>
+        <button class="mini${account.status === 'cooldown' ? '' : ''}" data-act="refresh" title="刷新配额">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5V5h-2.5"></path>
+          </svg>
+        </button>
+        <button class="mini danger" data-act="delete" title="移除账号">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"></path>
+          </svg>
+        </button>
+        <button class="switch" data-act="toggle" aria-checked="${enabled}" title="${enabled ? '参与调度' : '已停用调度'}"></button>
+      </div>
+    </div>`
+  }).join('')
+
+  host.innerHTML = `<div class="roster">
+    <div class="roster-head">
+      <div>账号</div>
+      <div>配额池（条长 = 剩余）</div>
+      <div>状态 · 并发</div>
+      <div style="text-align:right">操作</div>
+    </div>
+    ${rows}
+  </div>`
+
+  host.querySelectorAll('.acct').forEach(row => {
+    const id = row.dataset.id
+    row.querySelectorAll('[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => handleAction(id, btn.dataset.act, row))
+    })
+  })
+}
+
+function renderSide() {
+  const water = document.getElementById('water-card')
+  if (!model.accounts.length) {
+    water.innerHTML = `<div class="water-row"><span class="water-name">无账号</span><div></div><span class="water-pct">—</span></div>`
+  } else {
+    const rows = POOLS.map(pool => {
+      let lowest = null
+      let unknown = 0
+      for (const account of model.accounts) {
+        const summary = poolSummary(account.models || [], pool.id)
+        if (summary.remaining === null) { unknown += 1; continue }
+        if (lowest === null || summary.remaining < lowest) lowest = summary.remaining
+      }
+      const cls = barClass(lowest)
+      const width = lowest === null ? 0 : Math.max(0, Math.min(100, lowest))
+      const track = lowest === null ? 'track none' : 'track'
+      const note = unknown ? `` : ''
+      return `<div class="water-row">
+        <span class="water-name">${esc(pool.label)}</span>
+        <div class="${track}"><div class="fill ${cls}" style="width:${width}%"></div></div>
+        <span class="water-pct${lowest !== null && cls === 'low' ? ' low' : ''}">${lowest === null ? '未知' : fmtPct(lowest)}</span>
+      </div>`
+    }).join('')
+    water.innerHTML = rows
+  }
+
+  const reset = document.getElementById('reset-card')
+  const rows = POOLS.map(pool => {
+    let earliest = ''
+    for (const account of model.accounts) {
+      const summary = poolSummary(account.models || [], pool.id)
+      if (!summary.reset) continue
+      const t = new Date(summary.reset).getTime()
+      if (!Number.isFinite(t)) continue
+      if (!earliest || t < new Date(earliest).getTime()) earliest = summary.reset
+    }
+    return `<div class="reset-row"><span>${esc(pool.label)}</span><b>${esc(fmtReset(earliest))}</b></div>`
+  }).join('')
+  reset.innerHTML = rows
+
+  document.getElementById('api-base').textContent = model.api_base || '—'
+  document.getElementById('api-key').textContent = model.api_key
+    ? model.api_key.slice(0, 3) + '••••' + model.api_key.slice(-4)
+    : '—'
+
+  document.getElementById('main-note').textContent = model.accounts.length
+    ? `Antigravity OAuth · ${model.accounts.length} 个账号 · 三个独立配额池`
+    : '还没有接入账号'
+}
+
+function renderKpi() {
+  const accounts = model.accounts
+  const online = accounts.filter(a => a.status === 'active').length
+  const inFlight = accounts.reduce((n, a) => n + (a.in_flight ?? 0), 0)
+  const maxConc = accounts.reduce((n, a) => n + (a.max_concurrency ?? 1), 0)
+  const fail = accounts.reduce((n, a) => n + (a.fail_count ?? 0), 0)
+  const stamps = accounts.map(a => a.updated_at).filter(v => typeof v === 'number' && Number.isFinite(v))
+
+  document.getElementById('kpi-online').innerHTML = `${online}<small>/${accounts.length}</small>`
+  document.getElementById('kpi-models').textContent = model.models.length || '0'
+  document.getElementById('kpi-conc').innerHTML = `${inFlight}<small>/${maxConc}</small>`
+  document.getElementById('kpi-fail').textContent = fail
+  document.getElementById('kpi-updated').textContent = stamps.length
+    ? new Date(Math.max(...stamps) * 1000).toLocaleTimeString('zh-CN', { hour12: false })
+    : '—'
+
+  document.getElementById('rail-accts').textContent = accounts.length
+  document.getElementById('rail-models').textContent = model.models.length || 0
+  document.getElementById('foot-conc').textContent = maxConc
+  document.getElementById('foot-guard').textContent = model.guard || '—'
+}
+
+function renderStatus() {
+  const dot = document.querySelector('#tb-status .dot')
+  const label = document.querySelector('#tb-status span')
+  const accounts = model.accounts
+  if (!connected) {
+    dot.className = 'dot err'
+    label.textContent = '未连接'
+    return
+  }
+  const cooling = accounts.filter(a => a.status === 'cooldown').length
+  const paused = accounts.filter(a => a.status === 'disabled').length
+  const reauth = accounts.filter(a => a.status === 'reauth').length
+  dot.className = 'dot' + (cooling || reauth ? ' paused' : '')
+  const bits = [`${accounts.length} 个账号`]
+  if (cooling) bits.push(`${cooling} 冷却`)
+  if (paused) bits.push(`${paused} 暂停`)
+  if (reauth) bits.push(`${reauth} 待重登`)
+  label.textContent = `运行中 · 127.0.0.1:8199 · ${bits.join(' · ')}`
+}
+
+function renderAll() {
+  renderKpi()
+  renderRoster()
+  renderSide()
+  renderStatus()
+}
+
+/* ---------------- 动作 ---------------- */
+async function handleAction(id, act, row) {
+  const account = model.accounts.find(a => a.id === id)
+  if (!account) return
+
+  if (act === 'test') {
+    const btn = row.querySelector('[data-act="test"]')
+    btn.disabled = true
+    try {
+      const reply = await api('/ui/rpc', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'account.test', payload: { accountId: id } }),
+      })
+      const value = reply.value || {}
+      window.alert(value.ok ? `探活成功：${value.ms} ms` : `探活失败：${value.error || '未知原因'}`)
+    } catch (error) {
+      window.alert(`探活请求失败：${error.message}`)
+    } finally {
+      btn.disabled = false
+    }
+    return
+  }
+
+  if (act === 'toggle') {
+    const next = account.status === 'disabled'
+    try {
+      await api('/ui/rpc', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'account.update', payload: { accountId: id, patch: { enabled: next } } }),
+      })
+      await load()
+    } catch (error) {
+      window.alert(`切换失败：${error.message}`)
+    }
+    return
+  }
+
+  if (act === 'refresh') {
+    row.querySelector('[data-act="refresh"]').disabled = true
+    try {
+      await api('/ui/quota/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'quota.refresh', payload: { accountId: id } }),
+      })
+      await load()
+    } catch (error) {
+      window.alert(`刷新失败：${error.message}`)
+    } finally {
+      row.querySelector('[data-act="refresh"]').disabled = false
+    }
+    return
+  }
+
+  if (act === 'models') {
+    const names = (account.models || []).map(m => m.name || m.id).sort()
+    window.alert(`${account.name || id}\n共 ${names.length} 个模型\n\n` + names.join('\n'))
+    return
+  }
+
+  if (act === 'delete') {
+    if (!window.confirm(`确认从号池移除 ${account.name || id}？`)) return
+    try {
+      await api('/ui/rpc', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'account.delete', payload: { accountId: id } }),
+      })
+      await load()
+    } catch (error) {
+      window.alert(`移除失败：${error.message}`)
+    }
+  }
+}
+
+/* ---------------- 载入 ---------------- */
+async function load() {
+  try {
+    const [quotaReply, stateReply] = await Promise.all([
+      api('/ui/quota'),
+      api('/ui/state').catch(() => null),
+    ])
+
+    const stateById = new Map()
+    if (stateReply && Array.isArray(stateReply.accounts)) {
+      for (const row of stateReply.accounts) stateById.set(row.id, row)
+    }
+
+    const accounts = (quotaReply.accounts || []).map(item => {
+      const runtime = stateById.get(item.id) || {}
+      return {
+        id: item.id,
+        name: item.name,
+        provider: 'antigravity',
+        driver: 'antigravity',
+        models: item.models || [],
+        updated_at: item.updated_at,
+        error: item.error || '',
+        // 状态以运行态为准；运行态缺失时退回配额接口报告的状态
+        status: runtime.status || item.status || 'active',
+        enabled: runtime.status ? runtime.status !== 'disabled' : item.status !== 'disabled',
+        in_flight: runtime.in_flight ?? 0,
+        max_concurrency: runtime.max_concurrency ?? 1,
+        fail_count: runtime.fail_count ?? 0,
+        cooldown_remaining_seconds: runtime.cooldown_remaining_seconds ?? 0,
+      }
+    })
+
+    model = {
+      accounts,
+      models: stateReply?.models || [],
+      api_base: quotaReply.api_base || stateReply?.api_base || '',
+      api_key: quotaReply.api_key || stateReply?.api_key || '',
+      guard: '20 次/分',
+    }
+    connected = true
+    renderAll()
+  } catch (error) {
+    connected = false
+    renderStatus()
+    const host = document.getElementById('roster-host')
+    if (error.status === 401) {
+      host.innerHTML = `<div class="notice bad"><b>未连接本机网关</b>当前窗口没有有效会话，输入网关密钥后即可读取真实号池。</div>`
+      requireConnect()
+    } else {
+      host.innerHTML = `<div class="notice bad"><b>读取号池失败</b>${esc(error.message)}</div>`
+    }
+  }
+}
+
+/* ---------------- 未接入渠道 ---------------- */
+const idleHost = document.getElementById('idle-list')
+idleHost.innerHTML = Object.entries(CHANNEL_META)
+  .filter(([id]) => id !== 'antigravity')
+  .map(([id, meta]) => {
+    const icon = meta.icon
+      ? `<img src="/assets/brand/${meta.icon}" alt="">`
+      : `<span style="width:15px;height:15px;display:grid;place-items:center;font-size:10px;color:var(--ink-3);font-weight:600">${esc(meta.label.slice(0, 1))}</span>`
+    const note = meta.note ? ` <em>${esc(meta.note)}</em>` : ''
+    return `<button class="idle-chip" data-channel="${esc(id)}">${icon}${esc(meta.label)}${note}</button>`
+  }).join('')
+
+idleHost.querySelectorAll('.idle-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const meta = CHANNEL_META[chip.dataset.channel]
+    window.alert(`${meta?.label || chip.dataset.channel}\n\n此原型仅演示界面。真实添加账号会走对应厂商的授权流程。`)
+  })
+})
+
+/* ---------------- 交互 ---------------- */
+document.getElementById('filter').addEventListener('input', event => {
+  filterText = event.target.value
+  renderRoster()
+})
+
+document.getElementById('reload').addEventListener('click', () => load())
+
+document.getElementById('probe-all').addEventListener('click', async event => {
+  const btn = event.currentTarget
+  btn.disabled = true
+  const results = []
+  for (const account of model.accounts) {
+    try {
+      const reply = await api('/ui/rpc', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'account.test', payload: { accountId: account.id } }),
+      })
+      const value = reply.value || {}
+      results.push(`${account.name || account.id}: ${value.ok ? `正常 ${value.ms} ms` : `失败 ${value.error || ''}`}`)
+    } catch (error) {
+      results.push(`${account.name || account.id}: 失败 ${error.message}`)
+    }
+  }
+  btn.disabled = false
+  window.alert(results.length ? results.join('\n') : '号池里没有账号')
+})
+
+document.querySelectorAll('[data-copy]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const target = document.getElementById(btn.dataset.copy)
+    const raw = btn.dataset.copy === 'api-key'
+      ? (model.api_key || '')
+      : (target.textContent || '')
+    try {
+      await navigator.clipboard.writeText(raw)
+      const old = btn.textContent
+      btn.textContent = '已复制'
+      setTimeout(() => { btn.textContent = old }, 1200)
+    } catch {
+      window.alert('复制失败，请手动选中复制')
+    }
+  })
+})
+
+document.getElementById('open-docs').addEventListener('click', () => {
+  window.open('/docs', '_blank', 'noopener')
+})
+
+await load()
+setInterval(load, 15000)
+</script>
+</body>
+</html>

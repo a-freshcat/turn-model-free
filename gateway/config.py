@@ -16,6 +16,9 @@ class Account(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     id: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    # `trae` 与 `loomy` 已下线（界面上不再提供入口），但仍留在这个 Literal 里：
+    # 老用户的 accounts.json 里可能还存着这两个渠道的历史账号记录，删掉枚举值
+    # 会让整个号池校验失败、网关起不来。保留 = 旧文件照常能读，只是不再新增。
     channel: Literal["codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
                      "trae", "cline", "loomy", "raccoon", "minimax", "zcode", "antigravity"] = "buddy"
     nickname: str = Field(default="", max_length=64)

@@ -53,14 +53,52 @@ class PluginGateway:
 
     def __init__(self, *, home: Path | None = None, host: str | None = None,
                  port: int | None = None, key: str | None = None,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0, bridge=None):
         self.home = home or dsh_home()
         self.host = host or DEFAULT_HOST
         raw_port = os.environ.get("DSH_OPENAI_GATEWAY_PORT")
         self.port = port or (int(raw_port) if raw_port and raw_port.strip().isdigit() else DEFAULT_PORT)
         self._key = key or os.environ.get("DSH_OPENAI_GATEWAY_API_KEY") or None
         self.timeout = timeout
+        self._bridge = bridge
         self._models: list[str] | None = None
+
+    async def _ensure_bridge_gateway(self) -> bool:
+        """DSH 桌面端的 8326 没起时，请桥在**备用端口**（18326）拉起同源网关。
+
+        为什么需要这条路：账号、令牌、积分都由插件持有，但真正的对话要经过插件
+        自己的 OpenAI 网关（默认 8326，归 DSH 桌面端所有）。DSH 没开时那个端口
+        是空的，于是对话只能回 `ConnectError` —— 而号池看起来完全正常，用户会
+        以为号池坏了。桥能装载同一份 pack.js 并在 18326 上提供同样的能力。
+
+        桥不实现这个方法（老版本）时返回 False，调用方退回原文案，不会更糟。
+        """
+        if self._bridge is None:
+            return False
+        try:
+            info = await self._bridge.call("gateway.ensure", {})
+        except Exception:  # noqa: BLE001 - 可选增强，失败就退回原来的报错
+            return False
+        if not isinstance(info, dict) or not info.get("running"):
+            return False
+        address = info.get("address")
+        if not isinstance(address, dict) or not address.get("port"):
+            return False
+        self.host = str(address.get("host") or self.host)
+        self.port = int(address["port"])
+        api_key = info.get("apiKey")
+        if isinstance(api_key, str) and api_key.strip():
+            self._key = api_key.strip()
+        return True
+
+    def _connect_help(self) -> str:
+        """连不上时给一句能直接照做的话，而不是只丢一个异常类名。"""
+        if self.port == DEFAULT_PORT:
+            return ("DSH 桌面端的插件网关没有运行（127.0.0.1:8326 无监听）。"
+                    "请打开 DSH 桌面端并确认「白嫖模型接入」的网关已启用；"
+                    "只用 Antigravity 时可在号池里停用插件渠道。")
+        return (f"插件网关 {self.host}:{self.port} 连不上。"
+                "备用网关可能启动失败，请重启本程序后再试。")
 
     # ---- 发现 ----
 
@@ -102,9 +140,23 @@ class PluginGateway:
                                          trust_env=False) as client:
                 response = await client.get(self.base_url + "/v1/models", headers=headers)
         except httpx.HTTPError as exc:
-            raise PluginGatewayError(
-                f"连不上 DSH 插件的网关 {self.base_url}（{type(exc).__name__}）。"
-                "请确认 DSH 正在运行且「白嫖模型接入」的网关已启用。") from None
+            # 8326 没起时先请桥拉起备用网关，再试一次 —— 否则程序冷启动后
+            # 第一次读模型清单必然失败，用户得先手动触发一次对话。
+            if await self._ensure_bridge_gateway():
+                try:
+                    async with httpx.AsyncClient(
+                            timeout=httpx.Timeout(self.timeout, connect=4),
+                            trust_env=False) as retry_client:
+                        response = await retry_client.get(
+                            self.base_url + "/v1/models", headers=self.headers())
+                except httpx.HTTPError as retry_exc:
+                    raise PluginGatewayError(
+                        f"连不上插件网关 {self.base_url}（{type(retry_exc).__name__}）。"
+                        + self._connect_help()) from None
+            else:
+                raise PluginGatewayError(
+                    f"连不上插件网关 {self.base_url}（{type(exc).__name__}）。"
+                    + self._connect_help()) from None
         if response.status_code == 401:
             raise PluginGatewayError("DSH 插件网关拒绝了密钥，请在 DSH 设置页重新复制")
         if response.status_code != 200:
@@ -145,10 +197,28 @@ class PluginGateway:
                                            headers=headers, json=body)
             response = await client.send(request, stream=True)
         except httpx.HTTPError as exc:
-            with anyio.CancelScope(shield=True):
-                await client.aclose()
-            raise PluginGatewayError(
-                f"转发到 DSH 插件网关失败（{type(exc).__name__}）") from None
+            # DSH 桌面端的 8326 没起时，由桥接子进程在备用端口拉起同源网关再试一次。
+            if await self._ensure_bridge_gateway():
+                headers = {**self.headers(), "Content-Type": "application/json",
+                           "Accept": "text/event-stream" if stream else "application/json"}
+                try:
+                    request = client.build_request("POST", self.base_url + "/v1/chat/completions",
+                                                   headers=headers, json=body)
+                    response = await client.send(request, stream=True)
+                except httpx.HTTPError as retry_exc:
+                    # 关闭连接必须屏蔽取消：请求已被取消时裸 await aclose() 会在
+                    # 第一个 checkpoint 抛出 Cancelled，client 与 socket 就漏了。
+                    with anyio.CancelScope(shield=True):
+                        await client.aclose()
+                    raise PluginGatewayError(
+                        f"转发到插件网关失败（{type(retry_exc).__name__}）。"
+                        + self._connect_help()) from None
+            else:
+                with anyio.CancelScope(shield=True):
+                    await client.aclose()
+                raise PluginGatewayError(
+                    f"转发到插件网关失败（{type(exc).__name__}）。"
+                    + self._connect_help()) from None
         except BaseException:
             with anyio.CancelScope(shield=True):
                 await client.aclose()

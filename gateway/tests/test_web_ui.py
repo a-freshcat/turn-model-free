@@ -54,24 +54,25 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         return await self.client.post("/ui/rpc", json={"method": method, "payload": payload},
                                        headers={"Origin": "http://gateway"})
 
-    async def test_root_is_original_ui_and_assets_are_local(self):
+    async def test_root_is_own_console_and_assets_are_local(self):
         response = await self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("白嫖模型接入", response.text)
-        self.assertIn("/assets/channel-runtime.js", response.text)
+        self.assertIn("turn-model-free", response.text)
+        self.assertIn("/assets/console.mjs", response.text)
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
-        asset = await self.client.get("/assets/vendor/turn-model-free/dist/demo.css")
+        asset = await self.client.get("/assets/brand/antigravity.png")
         self.assertEqual(asset.status_code, 200)
-        self.assertIn(".ofm_chan", asset.text)
-        module = await self.client.get("/assets/app.mjs")
+        self.assertTrue(asset.headers["content-type"].startswith("image/"))
+        module = await self.client.get("/assets/console.mjs")
         self.assertTrue(module.headers["content-type"].startswith("text/javascript"))
         self.assertEqual((await self.client.get("/assets/../accounts.json")).status_code, 404)
 
     async def test_antigravity_add_starts_google_authorization(self):
         await self.login()
-        runtime = await self.client.get("/assets/channel-runtime.js")
-        self.assertIn("id: 'antigravity', name: 'Antigravity'", runtime.text)
-        self.assertNotIn("id: 'gemini', name: 'Gemini'", runtime.text)
+        # 渠道标签以控制台自己的注册表为准：Antigravity 是独立渠道，不是 Gemini。
+        module = (await self.client.get("/assets/console.mjs")).text
+        self.assertIn("antigravity:", module)
+        self.assertIn("Antigravity", module)
         response = await self.rpc("account.create", {"provider": "antigravity"})
         self.assertEqual(response.status_code, 200, response.json())
         link = urlsplit(response.json()["value"]["loginUrl"])
@@ -88,11 +89,13 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post("/ui/session", json={"key": "ui-test-key"},
                                                 headers={"Origin": "https://other.test"})).status_code, 403)
         await self.login()
+        # 跨源 POST 现在明确回 403（不是 401）：401 会让用户看到「请先连接本机
+        # 网关」，而他刚连上；真正该说的是「这个请求不是本机页面发的」。
         for origin in ("https://other.test", None):
             response = await self.client.post("/ui/rpc",
                 json={"method": "account.delete", "payload": {"accountId": "primary"}},
                 headers={} if origin is None else {"Origin": origin})
-            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.status_code, 403 if origin else 401)
         response = await self.rpc("account.list", {"provider": "buddy"})
         accounts = response.json()["value"]["accounts"]
         # 插件里的账号会排在本机账号前面（见 test_plugin_accounts.py），

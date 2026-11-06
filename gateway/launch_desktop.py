@@ -8,10 +8,14 @@ When the native window is closed, the application and backend terminate cleanly.
 """
 
 import argparse
+import logging
 import os
 import sys
 import threading
 import time
+import traceback
+from copy import copy
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -31,6 +35,45 @@ from launch_web import (
 )
 
 
+class DiagnosticFormatter(logging.Formatter):
+    def format(self, record):
+        safe_record = copy(record)
+        safe_record.exc_text = None
+        return super().format(safe_record)
+
+    def formatException(self, exc_info):
+        def format_branch(error, tb, depth):
+            indent = "  " * depth
+            yield indent + type(error).__name__
+            for frame in traceback.extract_tb(tb)[-12:]:
+                yield f"{indent}{Path(frame.filename).name}:{frame.lineno} {frame.name}"
+            if isinstance(error, BaseExceptionGroup) and depth < 3:
+                for child in error.exceptions[:4]:
+                    yield from format_branch(child, child.__traceback__, depth + 1)
+
+        return "\n".join(format_branch(exc_info[1], exc_info[2], 0))
+
+
+# 启动提示用的独立 logger。
+#
+# 为什么不复用 uvicorn 的：uvicorn 配的是 `log_level="warning"`，`info` 会被
+# 直接过滤掉。之前为了让它显出来，就借 `warning` 级别打印，结果控制台出现
+# `WARNING: Desktop diagnostic log enabled...` —— 用户以为是启动失败来问。
+# 状态提示就该用 info 级别、并且不带醒目的级别前缀。
+LAUNCHER_LOGGER = 'gateway.desktop'
+
+# 级别必须**显式**设成 INFO。不设的话 effective level 继承 root（默认
+# WARNING），启动提示这类 INFO 记录会被整条丢掉 —— 实测日志文件里 0 字节。
+# 不冒泡：控制台那句由 `_notice()` 自己 print，冒泡会让它重复出现。
+_LAUNCHER = logging.getLogger(LAUNCHER_LOGGER)
+_LAUNCHER.setLevel(logging.INFO)
+_LAUNCHER.propagate = False
+
+
+def launcher_logger():
+    return _LAUNCHER
+
+
 class ServerThread(threading.Thread):
     def __init__(self, port: int):
         super().__init__(daemon=True)
@@ -46,10 +89,78 @@ class ServerThread(threading.Thread):
         self.server = uvicorn.Server(config)
 
     def run(self):
-        self.server.run()
+        # The desktop launcher may have no attached console.
+        log_path = ROOT / '.gateway-desktop.log'
+        try:
+            handler = RotatingFileHandler(log_path, maxBytes=512_000,
+                                          backupCount=2, encoding='utf-8')
+        except OSError:
+            self._notice(f'诊断日志无法写入（{log_path}），本次启动不记录日志', level=logging.WARNING)
+            self.server.run()
+            return
+        handler.setFormatter(DiagnosticFormatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
+        loggers = [logging.getLogger(name)
+                   for name in ('antigravity_driver', 'uvicorn.error', LAUNCHER_LOGGER)]
+        for logger in loggers:
+            logger.addHandler(handler)
+        try:
+            # 状态提示，不是故障。
+            #
+            # 这里**不用 logging 输出到控制台**：uvicorn 启动时会重配 logging，
+            # 把已有 handler 换掉，消息就静默丢了（实测控制台一个字都没有，只有
+            # 日志文件里有记录）。`print` 直接写 stderr，不会被那套配置影响。
+            #
+            # 也不打 "WARNING:" 前缀：这条曾经用 warning 级别借道显示，结果
+            # 用户看到 "WARNING:" 以为启动失败了。
+            self._notice(f'诊断日志已启用 · 端口 {self.port} · 写入 {log_path}')
+            self._notice(f'打开 http://127.0.0.1:{self.port}/ 即可使用')
+            self.server.run()
+        finally:
+            for logger in loggers:
+                logger.removeHandler(handler)
+            handler.close()
+
+    @staticmethod
+    def _notice(message, level=logging.INFO):
+        """同时送到控制台与诊断日志；控制台那句不带级别前缀。"""
+        stream = sys.stderr if sys.stderr is not None else sys.__stderr__
+        if stream is not None:
+            try:
+                print(message, file=stream, flush=True)
+            except (OSError, ValueError, UnicodeError):
+                # 无控制台（pythonw）或编码不支持时，忽略即可 —— 日志文件仍有记录。
+                pass
+        try:
+            logging.getLogger(LAUNCHER_LOGGER).log(level, message)
+        except Exception:  # noqa: BLE001 - 提示失败绝不能影响启动
+            pass
 
     def stop(self):
         self.server.should_exit = True
+
+
+def _print_startup_banner(port: int, api_key: str) -> None:
+    """打印客户端接入需要的两个值。
+
+    直接用 `print` 而不经 logging：uvicorn 启动时会重配 logging，之前那条
+    状态提示就是这样被吞掉的。`print` 不受那套配置影响。
+    """
+    lines = [
+        '',
+        f'本机网关地址：http://127.0.0.1:{port}/v1',
+        '网关 Key（客户端接入用；/docs 里点 Authorize 也填它）：',
+        api_key,
+        f'控制台：http://127.0.0.1:{port}/',
+        '',
+    ]
+    stream = sys.stdout if sys.stdout is not None else sys.__stdout__
+    for line in lines:
+        if stream is not None:
+            try:
+                print(line, file=stream, flush=True)
+            except (OSError, ValueError, UnicodeError):
+                # 无控制台（pythonw）或编码不支持：界面里同样能复制，不算错误。
+                return
 
 
 def main():
@@ -75,6 +186,15 @@ def main():
 
     if not os.environ.get("GATEWAY_API_KEY"):
         os.environ["GATEWAY_API_KEY"] = _load_or_create_api_key()
+
+    # 把 Key 与地址打到控制台：客户端接入、/docs 的 Authorize 都要用它。
+    #
+    # `launch-web.cmd` 那条路径一直有这段输出，桌面端漏了 —— 同样是启动网关，
+    # 用户在这里看不到 Key，只能去界面里翻。这里补齐，措辞与网页端保持一致。
+    #
+    # 无控制台时（pythonw）print 会静默失败，不影响启动：桌面窗口里同样能看到
+    # 并复制这两个值。
+    _print_startup_banner(args.port, os.environ["GATEWAY_API_KEY"])
 
     # 端口自愈检测
     if not _port_available(args.port):
