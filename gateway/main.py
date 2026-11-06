@@ -256,8 +256,11 @@ async def models(request: Request):
         return unauthorized
     listed = list(request.app.state.pool.models)
     # 12 家的模型由插件网关提供；连不上时只是这批模型缺席，不影响本机号池。
+    # 过滤掉不在 CHANNELS 白名单内的未支持渠道（如匿名渠道 opencode 等）。
     try:
-        listed += [m for m in await request.app.state.web.plugin.probe() if m not in listed]
+        probe_models = await request.app.state.web.plugin.probe()
+        listed += [m for m in probe_models
+                   if m not in listed and PluginGateway.provider_of(m) in CHANNELS]
     except PluginGatewayError:
         pass
     return {"object": "list", "data": [

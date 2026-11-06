@@ -161,6 +161,15 @@ class MergedViewTests(unittest.IsolatedAsyncioTestCase):
         # name 去掉前缀，页面显示得干净，但 id 必须保留全名供转发。
         self.assertEqual(models[0]["name"], "GLM-5.2")
 
+    async def test_v1_models_filters_unregistered_channels(self):
+        """不在 CHANNELS 白名单里的渠道（如 opencode 等）不能泄露到 /v1/models。"""
+        self.web.plugin = _FakePlugin(["codearts/GLM-5.2", "opencode/deepseek-v4.1-flash-free"])
+        response = await self.client.get("/v1/models", headers={"Authorization": "Bearer merge-test-key"})
+        self.assertEqual(response.status_code, 200)
+        ids = [row["id"] for row in response.json()["data"]]
+        self.assertIn("codearts/GLM-5.2", ids)
+        self.assertNotIn("opencode/deepseek-v4.1-flash-free", ids)
+
     async def test_status_counts_include_plugin_accounts(self):
         """插件有账号时状态不能还是 0/0——这正是用户报的那个现象。"""
         class _Plugin:
