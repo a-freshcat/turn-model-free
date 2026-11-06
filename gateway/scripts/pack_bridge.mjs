@@ -117,6 +117,36 @@ ctx.llm = {
 }
 ctx.commands = { register() {} }
 
+// ── 附件服务：图片入站的唯一通道 ──
+//
+// pack.js 的 OpenAI 网关解析 `image_url` 时先取 `ctx.get("attachments")`：拿不到
+// 就明确回 400「当前 profile 未装载附件服务（@deepseek-ai/dsh-attachment-local）」。
+// DSH 桌面端的 8326 网关挂着这个服务，桥自己拉起的 18326 网关没有 —— 同一份
+// pack.js，桌面端能收图，桥这边一律 400。
+//
+// `ctx.get()` 读的是 cordis 的 isolate store（`_getImpl`），属性赋值
+// （`ctx.attachments = x`，credentials 那种用法）它看不见。所以必须用真正的
+// `ctx.plugin()` 注册到**主 ctx** 的 store —— pack.js 的 `mountOpenAiGateway(ctx)`
+// 闭包捕获的就是这个 ctx。
+const ATTACHMENTS_HOME = process.env.DSH_HOME || path.join(homedir(), '.dsh')
+let attachmentsReady = 'unavailable'
+try {
+  const attachmentLocal = await import(
+    pathToFileURL(req.resolve('@deepseek-ai/dsh-attachment-local')).href)
+  ctx.plugin(attachmentLocal.default, { dshHome: ATTACHMENTS_HOME })
+  let attachments
+  for (let i = 0; i < 200; i += 1) {
+    attachments = ctx.get('attachments')
+    if (typeof attachments?.saveImage === 'function') break
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  if (typeof attachments?.saveImage !== 'function') throw new Error('attachments service did not start')
+  attachmentsReady = path.join(ATTACHMENTS_HOME, 'attachments', 'v1')
+} catch (error) {
+  attachmentsReady = `unavailable: ${String(error?.message ?? error)}`
+  logs.push(['warn', `attachments unavailable, image input will be rejected: ${attachmentsReady}`])
+}
+
 // ── 绝不让桥抢走 DSH 的 openai-gateway 端口 ──
 //
 // pack.js 的 `apply()` 会顺带启动它自己的 OpenAI 兼容网关，默认监听
@@ -273,7 +303,7 @@ async function main() {
   try {
     const info = await load()
     emit({ ready: true, channels: CHANNELS, pack: info.name, path: PACK,
-           credentials: credentialsReady })
+           credentials: credentialsReady, attachments: attachmentsReady })
   } catch (error) {
     emit({ ready: false, error: String(error?.message ?? error) })
     process.exit(1)

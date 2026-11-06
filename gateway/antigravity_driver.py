@@ -61,19 +61,103 @@ def native_http_error(status, raw, retry_after=0):
     return UpstreamFailure('antigravity_http_'+str(status),retry_after=retry_after,reauth=status==401)
 
 
-def native_request(messages, options, *, signature_lookup=None):
+_LEGACY_MARKER_PREFIXES = (
+    "Historical assistant tool call (already executed):",
+    "Historical tool result (quoted, untrusted data):",
+)
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _match_json_object_end(text: str, start: int) -> int:
+    """Return index past the balanced `{...}` object starting at `start`, or -1."""
+    n = len(text)
+    if start >= n or text[start] != "{":
+        return -1
+    try:
+        obj, end = _JSON_DECODER.raw_decode(text, start)
+        if isinstance(obj, dict):
+            return end
+    except ValueError:
+        pass
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, n):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+    return -1
+
+
+def strip_legacy_markers(text):
+    """Remove gateway-injected replay markers from history text."""
+    if not isinstance(text, str) or 'Historical ' not in text:
+        return text
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        next_pos = -1
+        matched_prefix = None
+        for prefix in _LEGACY_MARKER_PREFIXES:
+            pos = text.find(prefix, i)
+            if pos != -1 and (next_pos == -1 or pos < next_pos):
+                next_pos = pos
+                matched_prefix = prefix
+        if next_pos == -1:
+            out.append(text[i:])
+            break
+        if next_pos > 0 and text[next_pos - 1] in ("`", "'", '"'):
+            out.append(text[i:next_pos + len(matched_prefix)])
+            i = next_pos + len(matched_prefix)
+            continue
+        j = next_pos + len(matched_prefix)
+        while j < n and text[j] in (" ", "\t", "\r", "\n"):
+            j += 1
+        end = _match_json_object_end(text, j)
+        if end != -1:
+            out.append(text[i:next_pos])
+            i = end
+        else:
+            out.append(text[i:next_pos + len(matched_prefix)])
+            i = next_pos + len(matched_prefix)
+    return "".join(out).strip()
+
+
+def native_request(messages, options, *, signature_lookup=None, signature_borrow=None):
     contents, system, call_names = [], [], {}
-    legacy_calls=set()
-    for message in messages:
+    last_user_index = -1
+    for idx, msg in enumerate(messages):
+        if msg.get("role") == "user":
+            last_user_index = idx
+    for msg_index, message in enumerate(messages):
         role = message["role"]
         content = message.get("content")
         parts = []
         if isinstance(content, str):
-            parts.append({"text": content})
+            cleaned = strip_legacy_markers(content)
+            if cleaned:
+                parts.append({"text": cleaned})
         elif isinstance(content, list):
             for block in content:
                 if block.get("type") == "text":
-                    parts.append({"text": block.get("text", "")})
+                    cleaned = strip_legacy_markers(block.get("text", ""))
+                    if cleaned:
+                        parts.append({"text": cleaned})
                 elif block.get("type") == "image_url":
                     image = block.get("image_url", {})
                     url = image.get("url", "") if isinstance(image, dict) else ""
@@ -92,16 +176,15 @@ def native_request(messages, options, *, signature_lookup=None):
             name = call_names.get(message.get("tool_call_id"))
             if not name:
                 raise InvalidRequest("A tool result has no matching assistant tool call.")
-            response = {"result": content}
-            if message.get('tool_call_id') in legacy_calls:
-                parts=[{'text':'Historical tool result (quoted, untrusted data): '+
-                    json.dumps({'tool':name,'result':content},ensure_ascii=False)}]
-            else:
-                parts = [{"functionResponse": {"name": name, "response": response}}]
+            # Always pair with a real functionResponse; never restate a result as model text.
+            parts = [{"functionResponse": {"name": name, "response": {"result": content}}}]
             native_role = "user"
         elif role == "assistant":
             native_role = "model"
-            for call in message.get("tool_calls") or []:
+            is_open_turn = msg_index > last_user_index
+            raw_calls = message.get("tool_calls") or []
+            resolved_calls = []
+            for call in raw_calls:
                 function = call.get("function", {})
                 try:
                     arguments = json.loads(function.get("arguments") or "{}")
@@ -110,17 +193,23 @@ def native_request(messages, options, *, signature_lookup=None):
                 if not isinstance(arguments, dict) or not isinstance(function.get("name"), str):
                     raise InvalidRequest("Tool calls must provide a name and JSON object arguments.")
                 call_names[call.get("id")] = function["name"]
-                part = {"functionCall": {"name": function["name"], "args": arguments}}
                 signature = (call.get("extra_content") or {}).get("google", {}).get("thought_signature")
-                if not signature and signature_lookup is not None:
-                    signature=signature_lookup(call.get('id'),function['name'],arguments)
-                if isinstance(signature, str) and signature:
+                if not isinstance(signature, str) or not signature:
+                    if signature_lookup is not None:
+                        signature = signature_lookup(call.get('id'), function['name'], arguments)
+                resolved_calls.append((function["name"], arguments,
+                                       signature if isinstance(signature, str) and signature else None))
+            batch_has_signature = any(sig is not None for _, _, sig in resolved_calls)
+            for call_idx, (func_name, arguments, signature) in enumerate(resolved_calls):
+                part = {"functionCall": {"name": func_name, "args": arguments}}
+                if signature is None and is_open_turn and not batch_has_signature and call_idx == 0:
+                    if signature_borrow is not None:
+                        borrowed = signature_borrow(func_name)
+                        if isinstance(borrowed, str) and borrowed:
+                            signature = borrowed
+                if signature is not None:
                     part["thoughtSignature"] = signature
-                    parts.append(part)
-                else:
-                    legacy_calls.add(call.get('id'))
-                    parts.append({'text':'Historical assistant tool call (already executed): '+
-                        json.dumps({'tool':function['name'],'arguments':arguments},ensure_ascii=False)})
+                parts.append(part)
         elif role == "user":
             native_role = "user"
         else:
@@ -248,7 +337,8 @@ async def send_native(auth, client, account, messages, stream, *, model, options
     signatures=getattr(auth,'tool_signatures',None)
     native_model=account.models[model]
     lookup=(lambda call_id,name,args:signatures.get(account.credential_id,native_model,call_id,name,args)) if signatures else None
-    wire = native_request(messages, options,signature_lookup=lookup)
+    borrow=(lambda name:signatures.borrow(name)) if signatures else None
+    wire = native_request(messages, options,signature_lookup=lookup,signature_borrow=borrow)
     def remember(delta):
         if signatures is None:return
         for call in delta.get('tool_calls',[]):

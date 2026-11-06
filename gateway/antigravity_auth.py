@@ -82,7 +82,7 @@ class OAuthCallbackRedaction:
 
 class AntigravityAuth:
     def __init__(self, root: Path):
-        self.tool_signatures=ToolSignatureCache()
+        self.tool_signatures=ToolSignatureCache(path=root / "tool-signatures.json")
         defaults = json.loads((ROOT / "antigravity_defaults.json").read_text())
         self.client_id = os.environ.get("ANTIGRAVITY_CLIENT_ID") or defaults["client_id"]
         self.client_secret = os.environ.get("ANTIGRAVITY_CLIENT_SECRET") or defaults["client_secret"]

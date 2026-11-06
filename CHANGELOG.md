@@ -1,5 +1,20 @@
 # 版本变更
 
+## v1.2.15 — 2026-11-06
+
+### 1. 附件服务：修复 18326 桥拉起网关时图片输入 400
+
+- **问题现象**：调用 OpenAI 接口发送图片数据时，网关返回 400「当前 profile 未装载附件服务（`@deepseek-ai/dsh-attachment-local`）」。
+- **原因分析**：`pack.js` 解析 `image_url` 时需通过 `ctx.get("attachments")` 获取附件存储服务；桌面端主网关默认装载了该服务，而子进程桥独立上下文未挂载该 isolate store 服务。
+- **修复措施**：在 `gateway/scripts/pack_bridge.mjs` 中通过 `ctx.plugin()` 将 `@deepseek-ai/dsh-attachment-local` 注册进主 context，并在桥初始化握手返回中增加 `attachments` 状态上报；配套增加 `test_bridge_mounts_the_attachment_store` 单元测试。
+
+### 2. Antigravity：彻底修复工具调用回显污染与签名中断
+
+- **废除正文降级**：移除了将无签名调用降级为 `Historical assistant tool call (already executed): ...` 文本标记的逻辑，已结束的历史轮次省略签名直接原生回放；
+- **签名缓存解耦与持久化**：`ToolSignatureCache` 键去除账号和模型绑定，允许跨账号轮转与跨模型复用，且支持持久化到磁盘 `.gateway-auth/tool-signatures.json`，避免进程重启后丢失签名；
+- **历史污染清除**：使用 `json.JSONDecoder().raw_decode` 及平衡括号状态机彻底剥离旧会话中遗留的多层嵌套、含花括号脚本等历史标记，解决长会话复述回显格式的问题；
+- **精确借用保护**：严格限制 `signature_borrow` 仅在未封闭当前轮次的首个调用上生效，防止污染已结束历史轮及并行调用的原生结构。
+
 ## v1.2.14 — 2026-11-06
 
 ### 模型过滤：`/v1/models` 按渠道白名单过滤未支持的上游渠道

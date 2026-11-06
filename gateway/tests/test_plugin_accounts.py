@@ -679,6 +679,29 @@ class BridgeDoesNotHijackGatewayPortTests(unittest.TestCase):
         # 内存实现只允许作为装载失败时的退路，且必须留痕。
         self.assertIn("memory-fallback", script)
 
+    def test_bridge_mounts_the_attachment_store(self):
+        """桥拉起的网关必须能收图，所以桥自己要把 `attachments` 注册进 store。
+
+        pack.js 解析 `image_url` 前先 `ctx.get("attachments")`，拿不到就回
+        400「当前 profile 未装载附件服务」。DSH 桌面端的 8326 挂着这个服务，
+        桥的 18326 没有——同一份 pack.js 一边能收图、一边一律 400，用户只能
+        看到一句误导性的「profile 未装载」。
+
+        必须是 `ctx.plugin()` 注册（进 isolate store），属性赋值
+        （`ctx.attachments = x`）`ctx.get()` 读不到；而且必须挂在主 ctx，
+        因为 `mountOpenAiGateway(ctx)` 闭包捕获的就是它。
+        """
+        script = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "pack_bridge.mjs").read_text(encoding="utf-8")
+        self.assertIn("@deepseek-ai/dsh-attachment-local", script)
+        self.assertIn("ctx.plugin(attachmentLocal.default", script)
+        self.assertIn("ctx.get('attachments')", script)
+        # 注册必须发生在 pack.js 的 apply() 之前，否则网关工厂已经建好了。
+        self.assertLess(script.index("ctx.plugin(attachmentLocal.default"),
+                        script.index("await mod.apply(ctx, {})"))
+        # 装不上时只降级并留痕，不能让桥起不来（账号管理还得能用）。
+        self.assertIn("attachments unavailable", script)
+
 
 if __name__ == "__main__":
     unittest.main()
