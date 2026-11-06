@@ -160,3 +160,18 @@ gh release create v1.3.2 `
 
 **以下不属于本对话，请勿删除**：`_probe/`、`free-m-clone` 相关、
 各类 `*-werewolf-*.mjs`、`main_repai/`、其他 `conversation-*` 目录。
+
+
+## 八、交接结果（已完成，2026-11-07）
+
+本节由接手对话补写；上面各节保留为需求来源与踩坑记录。
+
+- 缺陷 A、缺陷 B、需求 1（EXE 启动器）、需求 2（Raccoon 隔离验证）**全部完成**，
+  已发布 `v1.3.2`（commit `51f2b98`，tag 已推，release 为 Latest）。
+- 完成记录与复现要点见工作区 `tmf-v132-release/RESULT.md`；本文件可删。
+- 发版流程在第五节的基础上补了两点：`prepare_release.py` 现在会**现编**
+  `TurnModelFree.exe` 塞进桌面包（编不出来只告警），`gh release view` 校验资产时
+  只有 `name/size/digest` 三个字段可用（`isLatest` 仍非法）。
+- 隔离要点：验证全程用临时端口（65199/65288/65399/65411）与临时
+  `DSH_HOME`/`DSH_CHANNEL_PACK_STATE_DIR`/`DSH_CREDENTIALS_PATH`，
+  没有触碰运行中的 8199 与 18326。
