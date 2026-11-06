@@ -1,6 +1,6 @@
 # 检查清单（给审查者 / Codex）
 
-> 这份清单的对象是 **free-m-clone** 仓库。它包含两块来源不同的代码：
+> 这份清单的对象是 **turn-model-free** 仓库。它包含两块来源不同的代码：
 > ① 逐字节抄自 `dsh-our-free-model` 的页面；② 移植自该插件 `pack.js` 的腾讯 11128 防护层。
 >
 > 目标是**能证伪**：每条都给了命令、期望值和"失败了说明什么"。
@@ -11,8 +11,8 @@
 ## 0. 准备：拿到一个干净副本
 
 ```bash
-git clone https://github.com/a-freshcat/free-m-clone.git
-cd free-m-clone
+git clone https://github.com/a-freshcat/turn-model-free.git
+cd turn-model-free
 ```
 
 **期望**：克隆后**没有** `node_modules`（这是刻意的，见 §4.1）。

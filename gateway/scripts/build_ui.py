@@ -1,4 +1,4 @@
-"""Build the channel runtime from the untouched local free-m-clone snapshot.
+"""Build the channel runtime from the untouched local turn-model-free snapshot.
 
 Only channel metadata changes: replace the Gemini card with Antigravity.
 The original card components, hooks, CSS, design tokens and layout stay intact.
@@ -7,7 +7,7 @@ The original card components, hooks, CSS, design tokens and layout stay intact.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "web/vendor/free-m-clone/dist/demo.js"
+SOURCE = ROOT / "web/vendor/turn-model-free/dist/demo.js"
 TARGET = ROOT / "web/channel-runtime.js"
 
 source = SOURCE.read_text(encoding="utf-8")

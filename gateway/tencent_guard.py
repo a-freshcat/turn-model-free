@@ -1,4 +1,4 @@
-"""Python adaptation of free-m-clone src/guard/tencent-gate.js (see README).
+"""Python adaptation of turn-model-free src/guard/tencent-gate.js (see README).
 
 Apply only to configured channels, once per account attempt from original
 messages. Tool calls, user/tool text, and recognized paths retain their bytes.

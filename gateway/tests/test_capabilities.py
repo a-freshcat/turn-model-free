@@ -271,7 +271,7 @@ class LauncherPortTests(unittest.TestCase):
 
         两份端口各自漂移是这类脚本最容易出的问题：改了一处、另一处还是旧的。
 
-        这个文件只存在于发布仓库（`free-m-clone/` 根），源目录没有它。不存在时
+        这个文件只存在于发布仓库（`turn-model-free/` 根），源目录没有它。不存在时
         跳过——「这次没验证」，不是「验证通过」。
         """
         entry = self.root.parent / "launch-web.cmd"

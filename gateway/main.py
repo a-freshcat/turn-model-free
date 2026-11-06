@@ -10,7 +10,6 @@ from typing import Literal
 from uuid import uuid4
 
 import anyio
-import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -21,13 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.types import Receive, Scope, Send
 
 from account_manager import AccountManager, InvalidRequest, Lease, PoolUnavailable, UpstreamFailure
+from protection import DispatchProtection, ProtectionBlocked, ProtectionMiddleware
 from config import load_settings
 from demo_upstream import transport_for
 from plugin_gateway import PluginGateway, PluginGatewayError
 from upstream_client import PreparedStream, UpstreamClient, encode_event
 from web_api import CHANNELS, WebManager, authorized as web_authorized, failure as web_failure, router as web_router
 from antigravity_auth import OAuthCallbackRedaction
-from protection import ProtectionBlocked, ProtectionMiddleware, SSEProtectionObserver, observe_error_value
 
 ROOT = Path(__file__).resolve().parent
 
@@ -55,6 +54,22 @@ class ChatRequest(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=4096)
     stream: bool | None = Field(default=False, strict=True)
     stream_options: StreamOptions | None = None
+
+
+class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
+
+    query: str = Field(min_length=1, max_length=2048)
+    maxResults: int | None = Field(default=8, ge=1, le=20)
+    max_results: int | None = Field(default=None, ge=1, le=20)
+
+
+class ImageGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
+
+    prompt: str = Field(min_length=1, max_length=4096)
+    output_path: str | None = Field(default=None, max_length=1024)
+    outputPath: str | None = Field(default=None, max_length=1024)
 
 
 def error_body(message: str, code: str, kind: str = "server_error", param: str | None = None):
@@ -107,7 +122,9 @@ class ChatResponse(Response):
                                      else self.pool.settings.stream_timeout_seconds),
                     timeout_reason="first_output_timeout" if stream else "completion_timeout")
             except ProtectionBlocked as exc:
-                await exc.response()(scope, receive, send)
+                response = exc.response()
+                response.headers.update(headers)
+                await response(scope, receive, send)
                 return
             except InvalidRequest as exc:
                 await error_response(400, str(exc), "invalid_request", "invalid_request_error",
@@ -162,6 +179,8 @@ class ChatResponse(Response):
                 "The upstream stream ended before completion.", "upstream_stream_interrupted",
             )), "more_body": True})
         except InvalidRequest as exc:
+            # Once SSE headers are sent, report the capability error as an error
+            # event. Unsupported output is not evidence of an unhealthy account.
             await send({"type": "http.response.body", "body": encode_event(error_body(
                 str(exc), "unsupported_output", "invalid_request_error",
             )), "more_body": True})
@@ -181,6 +200,9 @@ async def lifespan(app: FastAPI):
     app.state.web = WebManager(app.state.pool,
                                Path(os.environ.get("GATEWAY_ACCOUNTS", str(ROOT / "accounts.json"))),
                                app.state.upstream)
+    guard = DispatchProtection(ROOT / '.gateway-protection.json')
+    app.state.web.protection = guard
+    app.state.pool.protection = app.state.upstream.protection = guard
     try:
         yield
     finally:
@@ -238,11 +260,6 @@ async def invalid_request(request: Request, exc: RequestValidationError):
                           "invalid_request", "invalid_request_error")
 
 
-@app.exception_handler(ProtectionBlocked)
-async def protection_blocked(request: Request, exc: ProtectionBlocked):
-    return exc.response()
-
-
 @app.get("/healthz")
 async def health():
     """进程探活；不发送上游请求，也不公开账号或凭据。"""
@@ -285,6 +302,8 @@ async def completions(body: ChatRequest, request: Request):
     return await make_chat_response(body, request)
 
 
+
+
 @app.post("/ui/chat", include_in_schema=False)
 async def web_chat(body: ChatRequest, request: Request):
     if not web_authorized(request):
@@ -318,18 +337,13 @@ async def make_chat_response(body: ChatRequest, request: Request):
 async def _plugin_chat(body: ChatRequest, request: Request):
     """把 12 家的对话转发给插件网关，按客户端要求做流式或整体透传。"""
     gateway: PluginGateway = request.app.state.web.plugin
-    guard = request.app.state.web.protection
-    await guard.before_send()
     payload = body.model_dump(mode="json", exclude_none=True)
     try:
         upstream = await gateway.chat(payload, stream=body.stream is True)
     except PluginGatewayError as exc:
-        await guard.observe_failure('plugin_transport')
         return error_response(503, str(exc), "plugin_gateway_unavailable", "api_error")
     if upstream.status_code != 200:
         try:
-            await guard.observe_failure(f'http_{upstream.status_code}')
-            guard.check()
             detail = await upstream.aread()
         finally:
             await upstream.aclose()
@@ -338,30 +352,23 @@ async def _plugin_chat(body: ChatRequest, request: Request):
     if body.stream is not True:
         try:
             content = await upstream.aread()
-            await observe_error_value(guard, content)
-            guard.check()
         finally:
             await upstream.aclose()
         return Response(content=content, status_code=200,
                         media_type=upstream.headers.get("content-type", "application/json"))
 
     async def frames():
-        observer = SSEProtectionObserver(guard)
         try:
             async for chunk in upstream.aiter_bytes():
-                await observer.feed(chunk)
-                guard.check()
                 yield chunk
-        except ProtectionBlocked:
-            yield encode_event(error_body('模型调用已暂停，请在管理页复制诊断信息交给 AI 排查。',
-                                          'dispatch_paused'))
-        except httpx.HTTPError:
-            await guard.observe_failure('plugin_stream_transport')
-            yield encode_event(error_body('上游流连接中断，请查看管理页调用保护状态。',
-                                          'upstream_stream_error'))
         finally:
             await upstream.aclose()
 
     return StreamingResponse(frames(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.exception_handler(ProtectionBlocked)
+async def dispatch_protection_error(request: Request, exc: ProtectionBlocked):
+    return exc.response()

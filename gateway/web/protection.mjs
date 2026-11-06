@@ -53,7 +53,7 @@ resume.addEventListener('click',async()=>{
 })
 copy.addEventListener('click',async()=>{
   if(!latest)return
-  const diagnostic={component:'free-m-clone gateway',
+  const diagnostic={component:'turn-model-free gateway',
     reason:latest.reason,http_status:latest.http_status,
     occurred_at:latest.occurred_at?new Date(latest.occurred_at*1000).toISOString():null,
     recent_failure_count:latest.recent_failure_count,last_issue_at:latest.last_issue_at,

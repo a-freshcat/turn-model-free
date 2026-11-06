@@ -1,11 +1,11 @@
 ---
 name: gateway-web-search
-description: Search the web through the configured free-m-clone gateway and return a grounded summary with source links. Use for web search, latest facts, releases, news and source verification in DSH; this skill uses the gateway search API rather than DeepSeek Messages API.
+description: Search the web through the configured turn-model-free gateway and return a grounded summary with source links. Use for web search, latest facts, releases, news and source verification in DSH; this skill uses the gateway search API rather than DeepSeek Messages API.
 ---
 
 # 网关网页搜索
 
-通过本技能 `scripts/search.py` 调用用户配置的 `/v1/search`。用户可单独安装技能，连接自建或获准共享的 free-m-clone 1.2.13+ 网关；无需本机部署号池或额外 DeepSeek Key。
+通过本技能 `scripts/search.py` 调用用户配置的 `/v1/search`。用户可单独安装技能，连接自建或获准共享的 turn-model-free 1.2.13+ 网关；无需本机部署号池或额外 DeepSeek Key。
 
 运行：
 

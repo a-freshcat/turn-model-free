@@ -137,7 +137,7 @@ node scripts/extract-theme.mjs    # 从 app.asar 里取设计令牌
 ## 四、目录与命令
 
 ```
-free-m-clone/
+turn-model-free/
 ├─ src/extracted/          # 抄写产物（AUTO-GENERATED，勿手改）
 │  ├─ channels-page.js     # ← 91 186 字符，这一页的全部代码
 │  ├─ channels.css         # 162 条规则 + 10 组动画
@@ -172,8 +172,8 @@ npm run extract           # 插件升级后重新抄一遍
 
 | 检查 | 结果 |
 |---|---|
-| `free-m-clone.zip` | 2.79 MB / 123 个条目，解压后 9.5 MB |
-| 压缩包结构 | 顶层就是 `free-m-clone/`，解压后不会多套一层 |
+| `turn-model-free.zip` | 2.79 MB / 123 个条目，解压后 9.5 MB |
+| 压缩包结构 | 顶层就是 `turn-model-free/`，解压后不会多套一层 |
 | 解压到新路径后 `extract --check` | **exit 0**（不再误报漂移） |
 | 解压后 `npm test`（含 `--with-drift`） | 旧版本验证 **46 / 46 通过** |
 | 解压后 Edge 无头渲染 `dist/index.html` | 13 张卡与全部数据正常 |

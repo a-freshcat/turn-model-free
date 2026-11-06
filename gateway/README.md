@@ -2,18 +2,18 @@
 
 当前使用入口见[仓库首页](../README.md)。v1.2.10 新增的暂停、限流和 AI 排查提醒见[调用保护说明](docs/protection.md)。
 
-Python 3.10+、FastAPI、Uvicorn、httpx 异步实现。支持离线模拟号池、OpenAI 兼容上游，以及 Antigravity Google OAuth 和原生请求驱动。保留 free-m-clone 原界面风格。
+Python 3.10+、FastAPI、Uvicorn、httpx 异步实现。支持离线模拟号池、OpenAI 兼容上游，以及 Antigravity Google OAuth 和原生请求驱动。保留 turn-model-free 原界面风格。
 
 ## 1. 来源与接入范围
 
-已检查 [a-freshcat/free-m-clone](https://github.com/a-freshcat/free-m-clone)，参考树版本为
+已检查 [a-freshcat/turn-model-free](https://github.com/a-freshcat/turn-model-free)，参考树版本为
 `03729233d039fff44ca34cf1c7cddb355c392099`：
 
-- [README](https://github.com/a-freshcat/free-m-clone/blob/03729233d039fff44ca34cf1c7cddb355c392099/README.md)
+- [README](https://github.com/a-freshcat/turn-model-free/blob/03729233d039fff44ca34cf1c7cddb355c392099/README.md)
   明确说明登录、余额等使用模拟渠道包；仓库没有可直接使用的真实渠道登录和网络驱动。
-- [pipeline.mjs](https://github.com/a-freshcat/free-m-clone/blob/03729233d039fff44ca34cf1c7cddb355c392099/src/guard/pipeline.mjs)
+- [pipeline.mjs](https://github.com/a-freshcat/turn-model-free/blob/03729233d039fff44ca34cf1c7cddb355c392099/src/guard/pipeline.mjs)
   的发送函数由调用者注入。本项目另行实现 Antigravity 驱动；腾讯真实渠道协议仍需独立提供。
-- [tencent-gate.js](https://github.com/a-freshcat/free-m-clone/blob/03729233d039fff44ca34cf1c7cddb355c392099/src/guard/tencent-gate.js)
+- [tencent-gate.js](https://github.com/a-freshcat/turn-model-free/blob/03729233d039fff44ca34cf1c7cddb355c392099/src/guard/tencent-gate.js)
   的内置规则用 Python 重新实现于 `tencent_guard.py`。处理 system/assistant，保留 user/tool、
   工具关联字段和识别到的路径；干净文本保持原样。
 - 原仓库未给出可核实的真实请求头/UA、凭据刷新及渠道请求体协议。这些值由部署配置或后续真实驱动提供。
@@ -57,7 +57,7 @@ Antigravity 候选项目、稳定性证据及尚未实测的边界见
 │   ├── quota-models.mjs      # 三个池分组与同名别名合并
 │   ├── quota.css             # 沿用原设计令牌的看板样式
 │   ├── channel-runtime.js    # 保留原组件，仅替换 Gemini 渠道元数据
-│   └── vendor/free-m-clone/  # 本地参考源码原件与哈希清单
+│   └── vendor/turn-model-free/  # 本地参考源码原件与哈希清单
 ├── scripts/build_ui.py       # 从原件生成运行包
 ├── examples/
 │   ├── chat.json
@@ -74,10 +74,10 @@ Antigravity 候选项目、稳定性证据及尚未实测的边界见
 ## 3. 本机启动（PowerShell）
 
 也可以直接双击 `launch-web.cmd`：已有 accounts.json 时加载真实配置，否则启动模拟号池，等本机服务就绪后打开
-`http://127.0.0.1:8199/`，显示与本地 free-m-clone 相同的渠道卡、图标、折叠列表和昼夜风格。
+`http://127.0.0.1:8199/`，显示与本地 turn-model-free 相同的渠道卡、图标、折叠列表和昼夜风格。
 启动器通过一次性入口自动建立管理会话；直接访问地址时，可输入启动窗口显示的网关密钥。
-原件位于 `原 free-m-clone 源码快照目录`，
-8 个复用文件按原字节保存在 web/vendor/free-m-clone，哈希清单见其 provenance.json。
+原件位于 `原 turn-model-free 源码快照目录`，
+8 个复用文件按原字节保存在 web/vendor/turn-model-free，哈希清单见其 provenance.json。
 
 点击「WorkBuddy 国内版 → 账号」可以看到两个演示账号，其他渠道按各自配置列出；
 演示账号不是已登录的真实厂商账号。右侧可测试同一个流式网关。
@@ -112,7 +112,7 @@ launch-web.cmd --real
 新机器通常使用虚拟环境：
 
 ```powershell
-cd path\to\free-m-clone\gateway
+cd path\to\turn-model-free\gateway
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:GATEWAY_API_KEY = "local-development-key"

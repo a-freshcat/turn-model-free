@@ -25,6 +25,7 @@ from bridge_client import BridgeError, PackBridge
 from config import Settings
 from antigravity_auth import AntigravityAuth, OAuthFailure, model_pool
 from plugin_gateway import PluginGateway, PluginGatewayError
+from protection import ProtectionBlocked
 
 router = APIRouter()
 CHANNELS = ("codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
@@ -1069,6 +1070,37 @@ async def quota_refresh(body: RPCInput, request: Request):
         except (OAuthFailure, ValueError, OSError) as exc:
             errors.append(str(exc) if isinstance(exc, OAuthFailure) else "本机账号状态更新失败")
     return {"ok": True, "errors": errors}
+
+
+@router.get("/ui/protection")
+async def protection_status(request: Request):
+    if not authorized(request):
+        return failure("请先连接本机网关", 401)
+    guard = getattr(request.app.state.web, "protection", None)
+    if guard is None:
+        return failure("调用保护暂不可用", 503)
+    return JSONResponse(await guard.snapshot(), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/ui/protection")
+async def protection_action(body: RPCInput, request: Request):
+    if not authorized(request):
+        return failure("请先连接本机网关", 401)
+    guard = getattr(request.app.state.web, "protection", None)
+    if guard is None:
+        return failure("调用保护暂不可用", 503)
+    if body.method == "protection.pause":
+        await guard.pause()
+    elif body.method == "protection.resume":
+        if body.payload.get("acknowledge") is not True:
+            return failure("请先检查暂停原因并确认恢复")
+        try:
+            await guard.resume()
+        except ProtectionBlocked:
+            return failure("无法保存恢复状态，请检查本机文件权限", 503)
+    else:
+        return failure("未知的调用保护操作")
+    return JSONResponse(await guard.snapshot(), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/ui/rpc")

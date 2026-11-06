@@ -60,7 +60,7 @@ class WebUITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("白嫖模型接入", response.text)
         self.assertIn("/assets/channel-runtime.js", response.text)
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
-        asset = await self.client.get("/assets/vendor/free-m-clone/dist/demo.css")
+        asset = await self.client.get("/assets/vendor/turn-model-free/dist/demo.css")
         self.assertEqual(asset.status_code, 200)
         self.assertIn(".ofm_chan", asset.text)
         module = await self.client.get("/assets/app.mjs")

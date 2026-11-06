@@ -22,7 +22,6 @@ import re
 from pathlib import Path
 
 import httpx
-import anyio
 
 DEFAULT_PORT = 8326
 DEFAULT_HOST = "127.0.0.1"
@@ -53,14 +52,35 @@ class PluginGateway:
 
     def __init__(self, *, home: Path | None = None, host: str | None = None,
                  port: int | None = None, key: str | None = None,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0, bridge=None):
         self.home = home or dsh_home()
         self.host = host or DEFAULT_HOST
         raw_port = os.environ.get("DSH_OPENAI_GATEWAY_PORT")
         self.port = port or (int(raw_port) if raw_port and raw_port.strip().isdigit() else DEFAULT_PORT)
         self._key = key or os.environ.get("DSH_OPENAI_GATEWAY_API_KEY") or None
         self.timeout = timeout
+        self._bridge = bridge
         self._models: list[str] | None = None
+
+    async def _ensure_bridge_gateway(self) -> bool:
+        """当 DSH 桌面端的 8326 未运行时，由桥接子进程在备用端口（18326）拉起同源网关。"""
+        if self._bridge is None:
+            return False
+        try:
+            info = await self._bridge.call("gateway.ensure", {})
+        except Exception:
+            return False
+        if not isinstance(info, dict) or not info.get("running"):
+            return False
+        address = info.get("address")
+        if not isinstance(address, dict) or not address.get("port"):
+            return False
+        self.host = str(address.get("host") or self.host)
+        self.port = int(address["port"])
+        api_key = info.get("apiKey")
+        if isinstance(api_key, str) and _KEY_PATTERN.fullmatch(api_key.strip()):
+            self._key = api_key.strip()
+        return True
 
     # ---- 发现 ----
 
@@ -96,15 +116,29 @@ class PluginGateway:
         try:
             headers = self.headers()
         except PluginGatewayError:
-            raise
+            if not await self._ensure_bridge_gateway():
+                raise
+            headers = self.headers()
+        connect_timeout = 0.35 if self._bridge is not None and self.host in {"127.0.0.1", "localhost"} else 4.0
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=4),
+            async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=connect_timeout),
                                          trust_env=False) as client:
                 response = await client.get(self.base_url + "/v1/models", headers=headers)
         except httpx.HTTPError as exc:
-            raise PluginGatewayError(
-                f"连不上 DSH 插件的网关 {self.base_url}（{type(exc).__name__}）。"
-                "请确认 DSH 正在运行且「白嫖模型接入」的网关已启用。") from None
+            if await self._ensure_bridge_gateway():
+                headers = self.headers()
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=4),
+                                                 trust_env=False) as client:
+                        response = await client.get(self.base_url + "/v1/models", headers=headers)
+                except httpx.HTTPError as retry_exc:
+                    raise PluginGatewayError(
+                        f"连不上 DSH 插件的网关 {self.base_url}（{type(retry_exc).__name__}）。"
+                        "请确认 DSH 正在运行且「白嫖模型接入」的网关已启用。") from None
+            else:
+                raise PluginGatewayError(
+                    f"连不上 DSH 插件的网关 {self.base_url}（{type(exc).__name__}）。"
+                    "请确认 DSH 正在运行且「白嫖模型接入」的网关已启用。") from None
         if response.status_code == 401:
             raise PluginGatewayError("DSH 插件网关拒绝了密钥，请在 DSH 设置页重新复制")
         if response.status_code != 200:
@@ -145,14 +179,21 @@ class PluginGateway:
                                            headers=headers, json=body)
             response = await client.send(request, stream=True)
         except httpx.HTTPError as exc:
-            with anyio.CancelScope(shield=True):
+            if await self._ensure_bridge_gateway():
+                headers = {**self.headers(), "Content-Type": "application/json",
+                           "Accept": "text/event-stream" if stream else "application/json"}
+                try:
+                    request = client.build_request("POST", self.base_url + "/v1/chat/completions",
+                                                   headers=headers, json=body)
+                    response = await client.send(request, stream=True)
+                except httpx.HTTPError as retry_exc:
+                    await client.aclose()
+                    raise PluginGatewayError(
+                        f"转发到 DSH 插件网关失败（{type(retry_exc).__name__}）") from None
+            else:
                 await client.aclose()
-            raise PluginGatewayError(
-                f"转发到 DSH 插件网关失败（{type(exc).__name__}）") from None
-        except BaseException:
-            with anyio.CancelScope(shield=True):
-                await client.aclose()
-            raise
+                raise PluginGatewayError(
+                    f"转发到 DSH 插件网关失败（{type(exc).__name__}）") from None
         return _OwnedResponse(response, client)
 
 
@@ -167,8 +208,7 @@ class _OwnedResponse:
         return getattr(self._response, name)
 
     async def aclose(self) -> None:
-        with anyio.CancelScope(shield=True):
-            try:
-                await self._response.aclose()
-            finally:
-                await self._client.aclose()
+        try:
+            await self._response.aclose()
+        finally:
+            await self._client.aclose()

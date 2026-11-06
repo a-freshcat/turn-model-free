@@ -1,8 +1,8 @@
 # 来源说明
 
-腾讯提示词规则与 11128 识别思路参考 a-freshcat/free-m-clone：
+腾讯提示词规则与 11128 识别思路参考 a-freshcat/turn-model-free：
 
-- https://github.com/a-freshcat/free-m-clone
+- https://github.com/a-freshcat/turn-model-free
 - 检查的 Git 树：03729233d039fff44ca34cf1c7cddb355c392099
 - 源文件：src/guard/tencent-gate.js、src/guard/pipeline.mjs
 
@@ -17,9 +17,9 @@ WeakSet 异常登记与 JavaScript 遥测。路径占位符冲突时保留原文
 ## 页面来源
 
 按用户指定，本次页面以本地源码
-`C:\Users\handsomeboys\Documents\deepseek-harness\repair_question\free-m-clone` 为准。
+`C:\Users\handsomeboys\Documents\deepseek-harness\repair_question\turn-model-free` 为准。
 页面工厂、渠道组件、词典、CSS、设计令牌及含 React 的原运行包均逐字节复制到
-`web/vendor/free-m-clone`，来源路径与哈希记录在 provenance.json。
+`web/vendor/turn-model-free`，来源路径与哈希记录在 provenance.json。
 该本地版本的这 8 个文件与前述 GitHub 快照一致；原始目录未作修改。
 
 `scripts/build_ui.py` 在生成包中替换 Gemini 渠道的 ID、名称、说明与配额映射，
