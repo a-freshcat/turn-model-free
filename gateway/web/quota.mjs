@@ -514,11 +514,12 @@ function render() {
   renderSummaryPills(visible)
 
   const host = $('quota-accounts')
+  if (!host) return
   if (!visible.length) {
     host.replaceChildren()
-    $('quota-empty').hidden = false
+    if ($('quota-empty')) $('quota-empty').hidden = false
   } else {
-    $('quota-empty').hidden = true
+    if ($('quota-empty')) $('quota-empty').hidden = true
     const wrapper = el('div', 'quota-table-wrapper')
     wrapper.setAttribute('tabindex', '0')
     wrapper.setAttribute('role', 'region')
@@ -603,25 +604,44 @@ function render() {
   const timestamps = visible
     .map(account => account.updated_at)
     .filter(value => typeof value === 'number' && Number.isFinite(value))
-  $('quota-updated').textContent = timestamps.length
-    ? '最近查询：' + new Date(Math.max(...timestamps) * 1000).toLocaleString('zh-CN')
-    : '实时连接本机号池'
+  if ($('quota-updated')) {
+    $('quota-updated').textContent = timestamps.length
+      ? '最近查询：' + new Date(Math.max(...timestamps) * 1000).toLocaleString('zh-CN')
+      : '实时连接本机号池'
+  }
 }
 
+function updateAccountSelect() {
+  const sel = $('quota-account')
+  if (!sel) return
+  sel.replaceChildren(
+    new Option('全部账号', ''),
+    ...accounts.map((account, idx) => new Option(`#${idx + 1} · ${displayAccountName(account, idx)}`, account.id))
+  )
+  sel.value = selected
+}
+
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
+  if ($('quota-updated') && !accounts.length) {
+    $('quota-updated').textContent = '正在读取…'
+  }
   const [quotaReply, stateReply] = await Promise.all([
     api('/ui/quota'),
     api('/ui/state').catch(() => null),
   ])
-  $('quota-error').textContent = ''
-  $('quota-auth-error').textContent = ''
+  if (seq !== loadSeq) return
+  if ($('quota-error')) $('quota-error').textContent = ''
+  if ($('quota-auth-error')) $('quota-auth-error').textContent = ''
 
   const stateById = new Map()
   if (stateReply && Array.isArray(stateReply.accounts)) {
     for (const s of stateReply.accounts) stateById.set(s.id, s)
   }
 
-  // Merge Antigravity quota accounts with live runtime state (concurrency, cooldown)
+  // 第一阶段（毫秒级秒开）：本机 Antigravity 账号配额数据到达后立即渲染上屏，不等待外部插件桥接
   const merged = (quotaReply.accounts || []).map(ag => {
     const rt = stateById.get(ag.id) || {}
     return {
@@ -636,80 +656,90 @@ async function load() {
     }
   })
 
-  // 插件渠道的账号不在 `/ui/state` 里（那只是本机 accounts.json 的快照），
-  // 所以**不能**用「state 里的账号比配额看板多」当作是否需要查询的条件——
-  // 只有 1 个 antigravity 账号时两边都是 1，那个条件恒为假，看板永远只剩
-  // 一个账号，插件积分一条都看不到。改为无条件问一次 `provider.status`，
-  // 它才是「这个渠道有没有账号」的真实来源。
+  accounts = [...merged]
+  if (selected && !accounts.some(account => account.id === selected)) selected = ''
+  updateAccountSelect()
+  bindGroupTabs()
+  render()
+
+  // 第二阶段（后台渐进补齐）：异步查询外部插件渠道账号与余额，完成后增量刷新
   const seenIds = new Set(merged.map(a => a.id))
-  {
-    try {
-      const statusRpc = await api('/ui/rpc', { method: 'provider.status', payload: {} })
-      const statuses = statusRpc.value?.statuses || {}
-      const activeProviders = Object.keys(statuses).filter(
-        ch => ch !== 'antigravity' && statuses[ch]?.accounts?.total > 0
-      )
+  try {
+    const statusRpc = await api('/ui/rpc', { method: 'provider.status', payload: {} })
+    if (seq !== loadSeq) return
+    const statuses = statusRpc.value?.statuses || {}
+    const activeProviders = Object.keys(statuses).filter(
+      ch => ch !== 'antigravity' && statuses[ch]?.accounts?.total > 0
+    )
+    if (activeProviders.length > 0) {
       const lists = await Promise.all(
         activeProviders.map(provider =>
           api('/ui/rpc', { method: 'account.list', payload: { provider } }).catch(() => null)
         )
       )
-      // 积分余额对每个账号是一次上游请求，所以和账号列表分开取。取失败只影响
-      // 那一行的读数，不该让整张表都空掉——这里逐渠道 catch 成 null。
-      const balanceLists = await Promise.all(
-        activeProviders.map(provider =>
-          api('/ui/rpc', { method: 'credits.balances', payload: { provider } }).catch(() => null)
-        )
-      )
-      const balancesById = new Map()
-      for (const reply of balanceLists) {
-        for (const row of reply?.value?.accounts || []) {
-          if (row?.accountId) balancesById.set(row.accountId, row)
-        }
-      }
+      if (seq !== loadSeq) return
+      const externalRows = []
       for (const item of lists) {
         for (const row of item?.value?.accounts || []) {
           if (seenIds.has(row.id)) continue
           seenIds.add(row.id)
           const rt = stateById.get(row.id) || {}
-          const credit = balancesById.get(row.id)
-          merged.push({
+          const extAcc = {
             id: row.id,
             name: (row.nickname || '未命名账号').replace(/\s*·\s*冷却.*$/, ''),
             provider: row.provider || 'buddy',
             driver: row.driver || 'openai',
             ...mergePluginRuntime(row, rt),
             models: [],
-            // 插件的积分包读数。`null` 表示查不到，`balanceError` 说明原因。
-            balance: credit?.balance ?? null,
-            balanceError: credit?.error || '',
-          })
+            balance: null,
+            balanceError: '',
+          }
+          merged.push(extAcc)
+          externalRows.push(extAcc)
         }
       }
-    } catch {
-      // 看板不该因为一次 RPC 失败就只剩 antigravity：外侧已经渲染了账号表，
-      // 这里静默跳过插件账号即可，错误由 `quota-error` 之外的正常路径表达。
-    }
-  }
+      if (externalRows.length > 0) {
+        accounts = [...merged]
+        updateAccountSelect()
+        render()
 
-  accounts = merged
-  if (selected && !accounts.some(account => account.id === selected)) selected = ''
-  $('quota-account').replaceChildren(
-    new Option('全部账号', ''),
-    ...accounts.map((account, idx) => new Option(`#${idx + 1} · ${displayAccountName(account, idx)}`, account.id))
-  )
-  $('quota-account').value = selected
-  bindGroupTabs()
-  render()
+        const balanceLists = await Promise.all(
+          activeProviders.map(provider =>
+            api('/ui/rpc', { method: 'credits.balances', payload: { provider } }).catch(() => null)
+          )
+        )
+        if (seq !== loadSeq) return
+        const balancesById = new Map()
+        for (const reply of balanceLists) {
+          for (const row of reply?.value?.accounts || []) {
+            if (row?.accountId) balancesById.set(row.accountId, row)
+          }
+        }
+        for (const extAcc of externalRows) {
+          const credit = balancesById.get(extAcc.id)
+          if (credit) {
+            extAcc.balance = credit.balance ?? null
+            extAcc.balanceError = credit.error || ''
+          }
+        }
+        accounts = [...merged]
+        render()
+      }
+    }
+  } catch {
+    // 看板已优先渲染本机账号表，插件桥接失败静默跳过
+  }
 }
 
-$('quota-account').addEventListener('change', event => {
+$('quota-account')?.addEventListener('change', event => {
   selected = event.target.value
-  const params = new URLSearchParams()
-  if (selected) params.set('account', selected)
-  if (activeGroup !== 'all') params.set('group', activeGroup)
-  const qs = params.toString()
-  history.replaceState(null, '', qs ? `/quota?${qs}` : '/quota')
+  if (location.pathname.startsWith('/quota')) {
+    const params = new URLSearchParams()
+    if (selected) params.set('account', selected)
+    if (activeGroup !== 'all') params.set('group', activeGroup)
+    const qs = params.toString()
+    history.replaceState(null, '', qs ? `/quota?${qs}` : '/quota')
+  }
   render()
 })
 
@@ -755,7 +785,7 @@ $('quota-back')?.addEventListener('click', event => {
   }
 })
 
-$('quota-theme').addEventListener('click', () => {
+$('quota-theme')?.addEventListener('click', () => {
   dark = !dark
   localStorage.setItem('gateway:theme', dark ? 'dark' : 'light')
   theme()

@@ -252,12 +252,17 @@ async function switchView(targetView, targetAccount = '') {
     if (tabChannels) tabChannels.classList.remove('active')
     if (tabQuota) tabQuota.classList.add('active')
 
-    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa6')
-    if (targetAccount) {
-      setQuotaAccount(targetAccount)
+    try {
+      const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa7')
+      if (targetAccount) {
+        setQuotaAccount(targetAccount)
+      }
+      await loadQuota()
+      quotaLoaded = true
+    } catch (error) {
+      if ($('quota-error')) $('quota-error').textContent = error.message || String(error)
+      if ($('quota-updated')) $('quota-updated').textContent = '读取失败'
     }
-    await loadQuota()
-    quotaLoaded = true
   } else {
     if (quotaRoot) quotaRoot.hidden = true
     if (pageRoot) pageRoot.hidden = false
