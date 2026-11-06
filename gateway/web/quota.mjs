@@ -699,6 +699,7 @@ async function load() {
     ...accounts.map((account, idx) => new Option(`#${idx + 1} · ${displayAccountName(account, idx)}`, account.id))
   )
   $('quota-account').value = selected
+  bindGroupTabs()
   render()
 }
 
@@ -712,20 +713,27 @@ $('quota-account').addEventListener('change', event => {
   render()
 })
 
-for (const btn of document.querySelectorAll('#quota-group-tabs button')) {
-  if (btn.dataset.group === activeGroup) {
-    btn.setAttribute('aria-pressed', 'true')
-  } else {
-    btn.setAttribute('aria-pressed', 'false')
-  }
-  btn.addEventListener('click', () => {
-    activeGroup = btn.dataset.group || 'all'
-    for (const b of document.querySelectorAll('#quota-group-tabs button')) {
-      b.setAttribute('aria-pressed', String(b === btn))
+function bindGroupTabs() {
+  for (const btn of document.querySelectorAll('#quota-group-tabs button')) {
+    if (btn.dataset.group === activeGroup) {
+      btn.setAttribute('aria-pressed', 'true')
+    } else {
+      btn.setAttribute('aria-pressed', 'false')
     }
-    render()
-  })
+    if (!btn._hasQuotaTabListener) {
+      btn._hasQuotaTabListener = true
+      btn.addEventListener('click', () => {
+        activeGroup = btn.dataset.group || 'all'
+        for (const b of document.querySelectorAll('#quota-group-tabs button')) {
+          b.setAttribute('aria-pressed', String(b === btn))
+        }
+        render()
+      })
+    }
+  }
 }
+
+bindGroupTabs()
 
 $('quota-back')?.addEventListener('click', event => {
   event.preventDefault()

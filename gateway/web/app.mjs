@@ -252,7 +252,7 @@ async function switchView(targetView, targetAccount = '') {
     if (tabChannels) tabChannels.classList.remove('active')
     if (tabQuota) tabQuota.classList.add('active')
 
-    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa4')
+    const { loadQuota, setQuotaAccount } = await import('/assets/quota.mjs?v=20261106-spa6')
     if (targetAccount) {
       setQuotaAccount(targetAccount)
     }
