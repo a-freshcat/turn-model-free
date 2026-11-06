@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。提供独立桌面客户端与网页端双模式，统一管理账号、查看三个独立配额池用量、选择模型并接入各类 OpenAI 兼容客户端。
 
-**当前版本：v1.3.1** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.3.2** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
 
 
 ## 只用技能，接入现成网关
@@ -30,7 +30,7 @@
 
 ## 安装与启动
 
-下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.3.1.zip` 桌面端与 `turn-model-free-web-v1.3.1.zip` 网页端独立包），或克隆仓库：
+下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.3.2.zip` 桌面端与 `turn-model-free-web-v1.3.2.zip` 网页端独立包），或克隆仓库：
 
 ```powershell
 git clone https://github.com/a-freshcat/turn-model-free.git
@@ -41,8 +41,16 @@ gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
 ```
 
 首次安装依赖后：
-- 双击根目录 **`launch-desktop.cmd`**：启动独立原生桌面窗口（基于 WebView2），同时在命令行显示网关地址和 Key；关闭窗口后回收服务；
-- 双击根目录 **`launch-web.cmd`**：启动网页端管理页（**http://127.0.0.1:8199/**）。
+- 双击包根目录 **`TurnModelFree.exe`**：启动独立原生桌面窗口（基于 WebView2），**没有控制台黑框**；关闭窗口后回收服务。发布包里已带好这个 exe，从源码跑则用 `scripts\build-launcher.ps1` 现编；
+- 双击根目录 **`launch-desktop.cmd`**：同样的桌面窗口，但保留命令行并显示网关地址和 Key —— 这是排障入口，exe 起不来时看它；
+- 双击根目录 **`launch-web.cmd`**：启动网页端管理页（**http://127.0.0.1:8199/**），用系统浏览器打开。
+
+想在桌面放快捷方式（或同时放进开始菜单）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1 -StartMenu
+```
 
 更换端口或仅启动后台服务：
 
@@ -120,6 +128,20 @@ curl.exe --noproxy "*" --fail-with-body --max-time 30 -N http://127.0.0.1:8199/v
 账号配置和登录凭据保存在本机，不包含在源码或发布包中。Antigravity 凭据在 Windows 上使用当前用户 DPAPI 加密，插件渠道继续使用插件自己的凭据库。
 
 默认只监听 `127.0.0.1`。当前账号池状态保存在单个进程内，使用一个 worker；多主机部署应分配独立账号池。
+
+### 控制台刷新策略
+
+控制台的刷新分成三档，目的是别把上游接口当本地文件读：
+
+| 数据 | 频率 | 是否打上游 |
+|---|---|---|
+| 运行态（在线、并发、冷却、调用保护、配额重置倒计时） | 15 秒 | 否，本机接口 |
+| 账号清单、渠道统计、模型目录 | 5 分钟或手动「刷新」 | 插件侧本机 RPC |
+| 插件积分（`credits.balances`） | 5 分钟，或切到「积分 仅手动」 | **是**，每个账号一次真实上游请求 |
+
+窗口不在前台时整体停表，回到前台补一轮。页面底部那行小字会写清各项读数的时间，
+5 分钟内的积分沿用上一轮的值并标出读数时刻 —— 不会悄悄变成「无读数」，也不会
+每 15 秒重打一遍上游。
 
 详细配置见 [网关说明](gateway/README.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。需要离线查看界面和防护实验台，可直接打开 `dist/index.html`。
 

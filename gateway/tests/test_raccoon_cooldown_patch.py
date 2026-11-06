@@ -12,6 +12,7 @@
 import json
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,7 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = ROOT / "scripts"
 PATCH_SCRIPT = SCRIPT_DIR / "patch-raccoon-cooldown.mjs"
 TEST_SCRIPT = SCRIPT_DIR / "test-raccoon-cooldown.mjs"
+BEHAVIOUR_SCRIPT = SCRIPT_DIR / "test-raccoon-cooldown.mjs"
 PATCHED = ROOT / ".pack" / "pack.raccoon-cooldown.js"
+DEFAULT_PACK_HOME = (
+    Path.home() / ".dsh" / "profiles" / "desktop" / "node_modules" / "dsh-our-free-model"
+)
+PACK_SOURCE = DEFAULT_PACK_HOME / "vendor" / "channel-pack"
 
 
 def _node():
@@ -106,6 +112,67 @@ class RaccoonCooldownPatchTests(unittest.TestCase):
         # 写文件只允许写到 .pack/ 下的副本。
         self.assertIn("writeFileSync(OUT_FILE", text)
         self.assertNotIn("writeFileSync(PACK", text)
+
+
+class IsolatedCopyTests(unittest.TestCase):
+    """`--isolated-dir` 产出的副本必须**真的能加载**。
+
+    这是 v1.3.1 的真实故障：只把 pack.js 复制到 `gateway/.pack/`，Qoder 一用就
+    `ENOENT ... qoder-auth-wasm.wasm` —— 因为 pack.js 里是
+    `WASM_PATH = resolve(dirname(import.meta.url), "qoder-auth-wasm.wasm")`。
+    因此隔离副本必须是**整目录复制**，同级资源一个都不能少。
+    """
+
+    def setUp(self):
+        if not (PACK_SOURCE / "pack.js").is_file():
+            self.skipTest("本机未安装 channel-pack 插件")
+        if _node() is None:
+            self.skipTest("node 不可用")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.target = Path(self.temp.name) / "lab"
+
+    def _patch_into_isolated(self):
+        result = _run(PATCH_SCRIPT, "--isolated-dir", str(self.target))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def test_isolated_copy_contains_sibling_assets(self):
+        result = _run(PATCH_SCRIPT, "--isolated-dir", str(self.target))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.target / "pack.js").is_file(), "副本 pack.js 不存在")
+        wasm = self.target / "qoder-auth-wasm.wasm"
+        self.assertTrue(wasm.is_file(), "同级 qoder-auth-wasm.wasm 没被复制 —— Qoder 会 ENOENT")
+        self.assertEqual(wasm.read_bytes(),
+                         (PACK_SOURCE / "qoder-auth-wasm.wasm").read_bytes(),
+                         "复制过去的 wasm 与原件不一致")
+        # 备份文件不该跟着搬（每个都近 3MB）。
+        backups = [p.name for p in self.target.iterdir() if ".bak" in p.name]
+        self.assertEqual(backups, [], f"隔离目录里混进了备份：{backups}")
+
+    def test_isolated_patch_differs_from_the_original(self):
+        original = (PACK_SOURCE / "pack.js").read_bytes()
+        result = _run(PATCH_SCRIPT, "--isolated-dir", str(self.target))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        patched = (self.target / "pack.js").read_bytes()
+        self.assertNotEqual(original, patched, "副本与原件逐字节相同，说明补丁没打上")
+        # 原件必须原封不动：隔离模式的整个意义就在这里。
+        self.assertEqual((PACK_SOURCE / "pack.js").read_bytes(), original,
+                         "补丁写回插件原件了")
+
+    def test_patched_behaviour_passes_against_the_isolated_copy(self):
+        """行为验证要对着**真正会加载的那一份**跑，而不是另抄一份逻辑。"""
+        result = _run(PATCH_SCRIPT, "--isolated-dir", str(self.target))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        behaviour = _run(TEST_SCRIPT, str(self.target / "pack.js"))
+        self.assertEqual(behaviour.returncode, 0,
+                         f"行为验证失败：\n{behaviour.stdout}\n{behaviour.stderr}")
+        self.assertIn("全部通过", behaviour.stdout)
+
+    def test_isolated_dir_refuses_the_plugin_directory_itself(self):
+        """隔离目录不能就是插件目录：那等于把补丁写回原件。"""
+        result = _run(PATCH_SCRIPT, "--isolated-dir", str(PACK_SOURCE))
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

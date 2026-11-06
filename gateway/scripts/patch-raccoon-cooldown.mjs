@@ -31,10 +31,25 @@
  *   node scripts/patch-raccoon-cooldown.mjs          生成/刷新副本
  *   node scripts/patch-raccoon-cooldown.mjs --check  只校验，不写文件
  *   node scripts/patch-raccoon-cooldown.mjs --print  打印将写入的路径
+ *
+ * ## 隔离模式（`--isolated-dir DIR`）
+ *
+ * 上面那条 `--check` 只校验「副本能不能对齐上游」。真正让副本**可加载**还有
+ * 一个前提：pack.js 用 `dirname(import.meta.url)` 解析同级资源，
+ * `qoder-auth-wasm.wasm` 就在它旁边（见 pack.js 的 `WASM_PATH`）。只复制
+ * `pack.js` 到别的目录，Qoder 一用就 ENOENT —— 这就是 v1.3.1 的真实缺陷。
+ *
+ * 所以启用补丁的正确做法是**整目录复制**：
+ *
+ *   node scripts/patch-raccoon-cooldown.mjs --isolated-dir %TEMP%\tmf-raccoon-lab
+ *
+ * 它把已安装的 channel-pack 目录（排除 *.bak）整个复制过去，在副本目录里打
+ * 补丁，并校验同级 wasm 确实存在。加载时给桥 `DSH_PACK_PATCHED=<副本>/pack.js`。
+ * 这条路径**默认不参与运行**：桥只读插件目录里的原件，副本只在显式指定时用。
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -106,9 +121,11 @@ function raccoonCooldownStep(accountId, modelId) {
 function main() {
   const check = process.argv.includes('--check')
   const print = process.argv.includes('--print')
+  const isolatedIndex = process.argv.indexOf('--isolated-dir')
+  const isolatedDir = isolatedIndex >= 0 ? process.argv[isolatedIndex + 1] : null
 
   if (print) {
-    console.log(JSON.stringify({ source: PACK, output: OUT_FILE }, null, 2))
+    console.log(JSON.stringify({ source: PACK, output: OUT_FILE, sibling_dir: dirname(PACK) }, null, 2))
     return
   }
 
@@ -155,6 +172,13 @@ function main() {
     return
   }
 
+  if (isolatedDir !== null) {
+    const target = resolve(isolatedDir)
+    const result = writeIsolated(target, body, sourceSha, patchedSha, applied)
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+
   mkdirSync(OUT_DIR, { recursive: true })
   writeFileSync(OUT_FILE, body, 'utf8')
   console.log(JSON.stringify({
@@ -163,7 +187,67 @@ function main() {
     source_sha256: sourceSha,
     patched_sha256: patchedSha,
     applied,
+    warning: '这个副本单独放着**不可加载**：pack.js 会按自身目录找同级 wasm。'
+      + '要在隔离目录里试补丁，请加 --isolated-dir DIR。',
   }, null, 2))
+}
+
+/** 副本目录里不复制的东西：备份、缓存、依赖。 */
+function skipEntry(name) {
+  return name.includes('.bak')
+    || name === '__pycache__'
+    || name === 'node_modules'
+    || name.startsWith('.')
+}
+
+/**
+ * 整目录复制 + 在副本目录里打补丁。
+ *
+ * 为什么必须整目录：pack.js 里 `WASM_PATH = resolve(dirname(import.meta.url),
+ * "qoder-auth-wasm.wasm")`，只搬 pack.js 时 Qoder 一用就 ENOENT（v1.3.1 的
+ * 真实缺陷）。同级资源全都在，补丁才谈得上"能加载"。
+ */
+function writeIsolated(target, body, sourceSha, patchedSha, applied) {
+  const sourceDir = dirname(PACK)
+  if (resolve(target) === resolve(sourceDir)) {
+    console.error('隔离目录不能就是插件目录本身：补丁绝不能写回原件。')
+    process.exit(5)
+  }
+  mkdirSync(target, { recursive: true })
+  const copied = []
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isFile() || skipEntry(entry.name)) continue
+    // pack.js 由下面的 writeFileSync 写入打补丁的版本，这里不复制原件。
+    if (entry.name === 'pack.js') continue
+    copyFileSync(join(sourceDir, entry.name), join(target, entry.name))
+    copied.push(entry.name)
+  }
+  const output = join(target, 'pack.js')
+  writeFileSync(output, body, 'utf8')
+
+  // 同级资源自检：pack.js 里凡是以 import.meta.url 为基准解析的文件都要在。
+  const checks = []
+  for (const entry of readdirSync(target, { withFileTypes: true })) {
+    if (entry.isFile() && /\.(wasm|js)$/.test(entry.name) && entry.name !== 'pack.js') {
+      checks.push(entry.name)
+    }
+  }
+  const sourceShas = createHash('sha256').update(body).digest('hex')
+  return {
+    ok: true,
+    isolated: true,
+    output,
+    sibling_files: copied.sort(),
+    sibling_check: checks.sort(),
+    source_sha256: sourceSha,
+    patched_sha256: patchedSha,
+    written_sha256: sourceShas,
+    applied,
+    // 只打印怎么用，不自动改任何运行配置：默认仍然加载插件原件。
+    use: `DSH_PACK_PATCHED=${output}`,
+    note: '这一份只用于隔离验证。桥默认仍加载插件原件；'
+      + '要试补丁，显式给桥设 DSH_PACK_PATCHED，并且只在你自己的临时环境里试。',
+  }
 }
 
 main()

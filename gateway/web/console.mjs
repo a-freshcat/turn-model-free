@@ -353,6 +353,13 @@ function renderRoster() {
             <span class="note-text muted">${esc(fmtClock(credit.earliest / 1000))}</span>
           </div>`)
         }
+        // 积分是真实上游读数，必须说清它是几点的：5 分钟内可能是沿用上一轮的值。
+        if (account.balanceAt) {
+          lines.push(`<div class="pool note-line">
+            <span class="pool-name">读数</span>
+            <span class="note-text muted">${esc(clockText(account.balanceAt))}</span>
+          </div>`)
+        }
       } else {
         lines.push(`<div class="pool">
           <span class="pool-name">积分</span>
@@ -542,6 +549,21 @@ function renderSide() {
   $('api-key').textContent = model.api_key
     ? model.api_key.slice(0, 3) + '••••' + model.api_key.slice(-4)
     : '—'
+}
+
+/* ---------------------------------------------------------------- 渲染：桌面启动 */
+function renderLauncher() {
+  const portEl = $('launch-port')
+  const kindEl = $('launch-kind')
+  if (!portEl || !kindEl) return
+  const base = (model.api_base || '').replace(/\/v1$/, '')
+  portEl.textContent = base ? base.replace(/^https?:\/\//, '') : '未知'
+  // pywebview 只在独立窗口里注入 window.pywebview；系统浏览器里没有它。
+  // 这里只说「现在这扇窗户是什么」，不猜用户当初双击的是 exe 还是 cmd ——
+  // 两者打开的都是同一个窗口，猜错反而误导。
+  kindEl.textContent = window.pywebview
+    ? '独立窗口（桌面端）'
+    : '系统浏览器（网页端）'
 }
 
 /* ---------------------------------------------------------------- 渲染：渠道 */
@@ -763,7 +785,25 @@ function renderAll() {
   renderModels()
   renderGuard()
   renderSettings()
+  renderLauncher()
   renderStatus()
+  renderHeadNote()
+}
+
+/**
+ * 标题下面那行说明。以前它永远停在 HTML 里的「读取中…」——数都读回来了，
+ * 页面还在说自己在读，用户会以为卡住了。
+ */
+function renderHeadNote() {
+  const note = $('main-note')
+  if (!note) return
+  if (!connected) { note.textContent = '未连接本机网关'; return }
+  const online = model.accounts.filter(item => item.enabled !== false && item.status === 'active').length
+  const cooling = model.accounts.filter(item => item.status === 'cooldown').length
+  const bits = [`${model.accounts.length} 个账号 · ${online} 在线`]
+  if (cooling) bits.push(`${cooling} 冷却`)
+  if (lastColdAt) bits.push(`账号读数 ${clockText(lastColdAt)}`)
+  note.textContent = bits.join(' · ')
 }
 
 /* ---------------------------------------------------------------- 视图切换 */
@@ -806,7 +846,7 @@ async function handleAction(id, act, row) {
     const next = account.status === 'disabled'
     try {
       await rpc('account.update', { accountId: id, patch: { enabled: next } })
-      await load()
+      await load({ cold: true, credits: 'skip' })
     } catch (error) {
       window.alert(`切换失败：${error.message}`)
     }
@@ -822,13 +862,14 @@ async function handleAction(id, act, row) {
           method: 'POST',
           body: JSON.stringify({ method: 'quota.refresh', payload: { accountId: id } }),
         })
-        await load()
+        await load({ cold: true, credits: 'skip' })
         const errors = reply?.errors || []
         if (errors.length) window.alert(`部分账号刷新失败：\n${errors.join('\n')}`)
       } else {
         // 插件账号的令牌续期是插件自己的事，交给 account.refresh。
+        // 用户点了「刷新」就是要看这个账号的当前读数，所以这一行的积分强制重查。
         await rpc('account.refresh', { accountId: id })
-        await load()
+        await load({ cold: true, credits: 'force' })
       }
     } catch (error) {
       window.alert(`刷新失败：${error.message}`)
@@ -859,7 +900,7 @@ async function handleAction(id, act, row) {
     if (!window.confirm(`确认从号池移除 ${account.name || id}？`)) return
     try {
       await rpc('account.delete', { accountId: id })
-      await load()
+      await load({ cold: true, credits: 'skip' })
     } catch (error) {
       window.alert(`移除失败：${error.message}`)
     }
@@ -888,12 +929,81 @@ async function startLogin(provider) {
 }
 
 /* ---------------------------------------------------------------- 载入 */
-async function load() {
+/*
+ * 冷热分离。这不是性能微调，是配额问题：`load()` 以前每 15 秒把所有渠道的
+ * 账号与**积分**重查一遍，6 个渠道有账号时约 14 次调用 / 15 秒 ≈ 56 次/分，
+ * 其中 `credits.balances` 对每个账号都是一次真实上游请求。既烧配额，也是
+ * 上游 429 的放大器（Raccoon 尤其明显）。
+ *
+ * 现在的口径：
+ *   热数据（本机、便宜）：在线状态、并发、冷却、保护状态 —— 15 秒一轮；
+ *   冷数据（账号清单、模型目录、渠道统计）：5 分钟或手动刷新；
+ *   积分（真实上游请求）：5 分钟一次，或在「积分」按钮里切成手动；
+ *   窗口不可见时整体暂停，回到前台再补一轮。
+ *
+ * 一条硬规矩保持不变：拿不到读数就沿用**上次读数并标出时刻**，不写 0。
+ */
+const HOT_MS = 15_000
+const COLD_MS = 5 * 60_000
+const CREDITS_MS = 5 * 60_000
+const TICK_MS = 10_000
+
+let creditsMode = localStorage.getItem('gateway:credits-mode') === 'manual' ? 'manual' : 'auto'
+let lastColdAt = 0
+let lastCreditsAt = 0
+let lastHotAt = 0
+let loading = null
+let hotTimer = null
+let coldTimer = null
+// 插件渠道的账号行（含积分与模型计数）。只在冷刷新时重建；热刷新只覆盖运行态，
+// 否则每次心跳都要重查一遍积分。
+let externalRows = []
+
+const clockText = ts => (ts
+  ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
+  : '')
+
+function creditsDue(now) {
+  // 首次加载总要查一次：否则切到「仅手动」后重开页面，积分永远是「无读数」，
+  // 而用户并没有要求「不显示」，只是不想被定时打上游。
+  if (lastCreditsAt === 0) return true
+  return creditsMode === 'auto' && now - lastCreditsAt >= CREDITS_MS
+}
+
+/** 把实时运行态叠到已有账号行上；不改动积分等冷数据。 */
+function withRuntime(rows, stateById) {
+  return rows.map(row => {
+    const runtime = stateById.get(row.id) || {}
+    return {
+      ...row,
+      status: runtime.status || row.status,
+      enabled: runtime.status ? runtime.status !== 'disabled' : row.enabled !== false,
+      in_flight: runtime.in_flight ?? row.in_flight ?? 0,
+      max_concurrency: runtime.max_concurrency ?? row.max_concurrency ?? 1,
+      fail_count: runtime.fail_count ?? row.fail_count ?? 0,
+      cooldown_remaining_seconds: runtime.cooldown_remaining_seconds ?? row.cooldown_remaining_seconds ?? 0,
+    }
+  })
+}
+
+/**
+ * @param {{cold?: boolean, credits?: 'auto'|'force'|'skip'}} options
+ *   cold=false 只拉热数据（本机接口，不碰上游）；
+ *   credits='force' 立刻重查插件积分，'skip' 沿用上次读数。
+ */
+async function load(options = {}) {
+  const { cold = true, credits = 'auto' } = options
+  // 手动刷新与定时器撞在一起时只跑一轮：并发重入会让下游看到重复的积分查询。
+  if (loading) return loading
+  loading = loadInner({ cold, credits }).finally(() => { loading = null })
+  return loading
+}
+
+async function loadInner({ cold, credits }) {
   try {
-    const [quotaReply, stateReply, statusReply, guardReply] = await Promise.all([
+    const [quotaReply, stateReply, guardReply] = await Promise.all([
       api('/ui/quota'),
       api('/ui/state').catch(() => null),
-      rpc('provider.status').catch(() => null),
       api('/ui/protection').catch(() => null),
     ])
 
@@ -922,78 +1032,102 @@ async function load() {
       }
     })
 
-    const statuses = statusReply?.value?.statuses || {}
+    if (cold) {
+      const statusReply = await rpc('provider.status').catch(() => null)
+      model.statuses = statusReply?.value?.statuses || {}
 
-    // 插件渠道的账号不在 /ui/quota 里（那是本机 OAuth 目录）。它们由插件持有：
-    // 账号、令牌、积分都在那边。以前只画 antigravity，号池里有 10 个账号却只
-    // 显示 2 个——这正是「号池怎么只看到两个」的原因。
-    const pluginProviders = Object.keys(statuses).filter(
-      id => id !== 'antigravity'
-        && !RETIRED_CHANNELS.has(id)
-        && (statuses[id]?.accounts?.total ?? 0) > 0,
-    )
-    const pluginLists = await Promise.all(pluginProviders.map(provider =>
-      rpc('account.list', { provider }).catch(() => null)))
-    // 积分对每个账号是一次上游请求，所以和账号列表分开取；失败只影响那一行。
-    const creditLists = await Promise.all(pluginProviders.map(provider =>
-      rpc('credits.balances', { provider }).catch(() => null)))
+      // 插件渠道的账号不在 /ui/quota 里（那是本机 OAuth 目录）。它们由插件持有：
+      // 账号、令牌、积分都在那边。以前只画 antigravity，号池里有 10 个账号却只
+      // 显示 2 个——这正是「号池怎么只看到两个」的原因。
+      const statuses = model.statuses
+      const pluginProviders = Object.keys(statuses).filter(
+        id => id !== 'antigravity'
+          && !RETIRED_CHANNELS.has(id)
+          && (statuses[id]?.accounts?.total ?? 0) > 0,
+      )
+      const pluginLists = await Promise.all(pluginProviders.map(provider =>
+        rpc('account.list', { provider }).catch(() => null)))
 
-    const creditById = new Map()
-    for (const reply of creditLists) {
-      for (const row of reply?.value?.accounts || []) {
-        if (row?.accountId) creditById.set(row.accountId, row)
+      // 积分对每个账号是一次上游请求，所以和账号列表分开取、按模式与到期判断。
+      const wantCredits = credits === 'force' || (credits !== 'skip' && creditsDue(Date.now()))
+      const creditLists = wantCredits
+        ? await Promise.all(pluginProviders.map(provider =>
+            rpc('credits.balances', { provider }).catch(() => null)))
+        : []
+      if (wantCredits) lastCreditsAt = Date.now()
+      // 这一轮没查积分时沿用上一轮读数：把旧值按账号取回来，别让它变成「无读数」。
+      const previousCredits = new Map()
+      if (!wantCredits) {
+        for (const row of externalRows) {
+          if (row.balance || row.balanceError) previousCredits.set(row.id, row)
+        }
       }
+
+      const creditById = new Map()
+      for (const reply of creditLists) {
+        for (const row of reply?.value?.accounts || []) {
+          if (row?.accountId) creditById.set(row.accountId, row)
+        }
+      }
+
+      const seen = new Set(local.map(item => item.id))
+      const external = []
+      pluginLists.forEach((reply, index) => {
+        const provider = pluginProviders[index]
+        // 渠道级模型计数来自 provider.status；账号行自己没有这个数字。
+        // 拿不到就保持 null（显示「—」），绝不能默认成 0——0 会被读成
+        // 「这个账号一个模型都没有」，而事实是我们没查。
+        const channelModels = statuses[provider]?.models?.total
+        for (const row of reply?.value?.accounts || []) {
+          if (!row?.id || seen.has(row.id)) continue
+          seen.add(row.id)
+          const runtime = stateById.get(row.id) || {}
+          const cached = previousCredits.get(row.id) || null
+          const credit = creditById.get(row.id) || null
+          external.push({
+            id: row.id,
+            name: (row.nickname || '未命名账号').replace(/\s*·\s*冷却.*$/, ''),
+            provider: row.provider || provider,
+            driver: row.driver || 'channel-pack',
+            models: null,
+            modelCount: Number.isFinite(channelModels) ? channelModels : null,
+            // 插件行自带 status；运行态有则以运行态为准
+            status: runtime.status || row.status || 'active',
+            enabled: runtime.status
+              ? runtime.status !== 'disabled'
+              : row.enabled !== false,
+            in_flight: runtime.in_flight ?? row.in_flight ?? 0,
+            max_concurrency: runtime.max_concurrency ?? row.max_concurrency ?? 1,
+            fail_count: runtime.fail_count ?? row.fail_count ?? 0,
+            cooldown_remaining_seconds: runtime.cooldown_remaining_seconds ?? row.cooldown_remaining_seconds ?? 0,
+            rate_limited_models: row.rate_limited_models || [],
+            // 这一轮没查积分时沿用上次读数，并带上它的时刻（页面会标出来）。
+            balance: credit?.balance ?? cached?.balance ?? null,
+            balanceError: credit?.error ?? cached?.balanceError ?? '',
+            balanceAt: credit ? lastCreditsAt : (cached?.balanceAt ?? 0),
+          })
+        }
+      })
+      externalRows = external
+      lastColdAt = Date.now()
     }
 
-    const seen = new Set(local.map(item => item.id))
-    const external = []
-    pluginLists.forEach((reply, index) => {
-      const provider = pluginProviders[index]
-      // 渠道级模型计数来自 provider.status；账号行自己没有这个数字。
-      // 拿不到就保持 null（显示「—」），绝不能默认成 0——0 会被读成
-      // 「这个账号一个模型都没有」，而事实是我们没查。
-      const channelModels = statuses[provider]?.models?.total
-      for (const row of reply?.value?.accounts || []) {
-        if (!row?.id || seen.has(row.id)) continue
-        seen.add(row.id)
-        const runtime = stateById.get(row.id) || {}
-        const credit = creditById.get(row.id) || null
-        external.push({
-          id: row.id,
-          name: (row.nickname || '未命名账号').replace(/\s*·\s*冷却.*$/, ''),
-          provider: row.provider || provider,
-          driver: row.driver || 'channel-pack',
-          models: null,
-          modelCount: Number.isFinite(channelModels) ? channelModels : null,
-          // 插件行自带 status；运行态有则以运行态为准
-          status: runtime.status || row.status || 'active',
-          enabled: runtime.status
-            ? runtime.status !== 'disabled'
-            : row.enabled !== false,
-          in_flight: runtime.in_flight ?? row.in_flight ?? 0,
-          max_concurrency: runtime.max_concurrency ?? row.max_concurrency ?? 1,
-          fail_count: runtime.fail_count ?? row.fail_count ?? 0,
-          cooldown_remaining_seconds: runtime.cooldown_remaining_seconds ?? row.cooldown_remaining_seconds ?? 0,
-          rate_limited_models: row.rate_limited_models || [],
-          balance: credit?.balance ?? null,
-          balanceError: credit?.error || '',
-        })
-      }
-    })
-
     model = {
-      accounts: [...local, ...external],
-      models: stateReply?.models || [],
-      api_base: quotaReply.api_base || stateReply?.api_base || '',
-      api_key: quotaReply.api_key || stateReply?.api_key || '',
-      statuses,
+      accounts: mergeAccounts(local, externalRows, stateById),
+      models: stateReply?.models || model.models || [],
+      api_base: quotaReply.api_base || stateReply?.api_base || model.api_base || '',
+      api_key: quotaReply.api_key || stateReply?.api_key || model.api_key || '',
+      statuses: model.statuses,
       protection: guardReply && guardReply.ok !== false ? guardReply : null,
     }
     connected = true
+    lastHotAt = Date.now()
     renderAll()
+    renderPollNote()
   } catch (error) {
     connected = false
     renderStatus()
+    renderPollNote()
     const host = $('roster-host')
     if (error.status === 401) {
       host.innerHTML = `<div class="notice bad"><b>未连接本机网关</b>当前窗口没有有效会话，输入网关密钥后即可读取真实号池。</div>`
@@ -1004,11 +1138,76 @@ async function load() {
   }
 }
 
+/**
+ * 本机行每次重建，插件行沿用冷刷新缓存 —— 但插件账号如果在本机号池里也有
+ * 同 id 的记录（导入过的），以本机行优先，避免同一个账号出现两次。
+ */
+function mergeAccounts(local, external, stateById) {
+  const seen = new Set(local.map(item => item.id))
+  const extra = withRuntime(external, stateById).filter(row => !seen.has(row.id))
+  return [...local, ...extra]
+}
+
+/** 右下角那行小字：说清数据是几点的、下一轮什么时候来、为什么停了。 */
+function renderPollNote() {
+  const note = $('poll-note')
+  if (!note) return
+  const bits = []
+  if (lastColdAt) bits.push(`数据 ${clockText(lastColdAt)}`)
+  if (!connected) {
+    note.dataset.paused = '1'
+    note.textContent = bits.length ? `${bits.join(' · ')} · 已断开` : '已断开'
+    return
+  }
+  if (document.hidden) {
+    note.dataset.paused = '1'
+    note.textContent = `${bits.join(' · ')} · 窗口不在前台，已暂停刷新`
+    return
+  }
+  delete note.dataset.paused
+  const credits = lastCreditsAt ? `积分 ${clockText(lastCreditsAt)}` : '积分未查'
+  const mode = creditsMode === 'auto' ? '自动' : '仅手动'
+  const hot = lastHotAt ? `热数据 ${clockText(lastHotAt)}` : ''
+  note.textContent = [...bits, credits, hot, `积分${mode}`, `${Math.round(HOT_MS / 1000)} 秒/轮`]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 /* ---------------------------------------------------------------- 连接 */
 const connectScrim = $('connect-scrim')
 const connectError = $('connect-error')
 
+/*
+ * 桌面端（launch_desktop.py）用 `#bootstrap=<一次性令牌>` 打开本页：令牌由
+ * 启动器生成、只在启动时有效，换完会话就作废。旧界面（app.mjs）认这个 hash，
+ * 重写控制台时漏了它 —— 于是双击 exe 开出来的窗口照样弹「粘贴网关密钥」，
+ * 用户以为快捷方式坏了。
+ *
+ * 这里把它补回来：有 bootstrap 就静默换会话，并立刻把 hash 抹掉（刷新/截图
+ * 都不该把它带出去）。换失败才退回手动输入框，并把原因写在框里。
+ */
+const bootstrapToken = new URLSearchParams(location.hash.slice(1)).get('bootstrap') || ''
+if (bootstrapToken) history.replaceState(null, '', location.pathname + location.search)
+
 $('origin-hint').textContent = location.origin
+
+async function exchangeBootstrap() {
+  if (!bootstrapToken) return false
+  try {
+    await api('/ui/session', {
+      method: 'POST',
+      headers: { Origin: location.origin },
+      body: JSON.stringify({ bootstrap: bootstrapToken }),
+    })
+    connectScrim.hidden = true
+    await load({ cold: true, credits: 'auto' })
+    startTimers()
+    return true
+  } catch (error) {
+    requireConnect(`启动令牌未能换取会话（${error.message}），请粘贴网关密钥。`)
+    return false
+  }
+}
 
 $('copy-key-path').addEventListener('click', async event => {
   event.preventDefault()
@@ -1041,7 +1240,7 @@ $('connect-form').addEventListener('submit', async event => {
     })
     $('connect-key').value = ''
     connectScrim.hidden = true
-    await load()
+    await load({ cold: true, credits: 'auto' })
   } catch (error) {
     connectError.textContent = error.message
   } finally {
@@ -1050,7 +1249,8 @@ $('connect-form').addEventListener('submit', async event => {
 })
 
 /* ---------------------------------------------------------------- 顶部与侧栏动作 */
-$('reload').addEventListener('click', () => load())
+// 手动刷新是用户明确要「现在就查」，所以冷热与积分都强制走一遍。
+$('reload').addEventListener('click', () => load({ cold: true, credits: 'force' }))
 
 $('add-account').addEventListener('click', () => {
   switchView('channels')
@@ -1089,7 +1289,7 @@ $('due-refresh').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({ method: 'quota.refresh', payload: { accountId: '' } }),
     })
-    await load()
+    await load({ cold: false })
     $('due-banner').hidden = true
   } catch (error) {
     window.alert(`刷新失败：${error.message}`)
@@ -1115,7 +1315,7 @@ $('guard-resume').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({ method: 'protection.resume', payload: { acknowledge: true } }),
     })
-    await load()
+    await load({ cold: false })
   } catch (error) {
     window.alert(`恢复失败：${error.message}`)
   }
@@ -1157,14 +1357,67 @@ for (const [id, action] of [
 }
 
 /* ---------------------------------------------------------------- 启动 */
-await load()
+// 桌面端带一次性令牌打开时先换会话：省掉一次必然 401 的读盘，
+// 也避免页面上先闪一下「未连接」再变正常。
+if (!(await exchangeBootstrap())) {
+  await load({ cold: true, credits: 'auto' })
+}
 
-// 数据每 15 秒重拉一次；重置倒计时每 10 秒走一格（不重新发请求）
-setInterval(() => {
-  if (connected) {
+/**
+ * 定时器只在窗口前台跑。`document.hidden` 时把定时器停掉、把状态写清楚：
+ * 一个最小化了一夜的窗口不该继续每分钟去问上游要积分。
+ */
+function startTimers() {
+  stopTimers()
+  if (document.hidden) { renderPollNote(); return }
+  // 重置倒计时每 10 秒走一格（不重新发请求）
+  hotTimer = setInterval(() => {
     renderResetStrip()
     if (currentView === 'pool') renderKpi()
     renderSide()
+  }, TICK_MS)
+  coldTimer = setInterval(() => {
+    if (!connected) return
+    const now = Date.now()
+    if (now - lastColdAt >= COLD_MS) {
+      void load({ cold: true, credits: creditsMode === 'auto' && creditsDue(now) ? 'auto' : 'skip' })
+    } else {
+      void load({ cold: false })
+    }
+  }, HOT_MS)
+}
+
+function stopTimers() {
+  if (hotTimer !== null) { clearInterval(hotTimer); hotTimer = null }
+  if (coldTimer !== null) { clearInterval(coldTimer); coldTimer = null }
+}
+
+startTimers()
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopTimers()
+    renderPollNote()
+    return
   }
-}, 10_000)
-setInterval(() => { if (connected) void load() }, 15_000)
+  // 回到前台补一轮：这段时间里上游可能已经被别人打满了。
+  void load({ cold: Date.now() - lastColdAt >= COLD_MS, credits: 'skip' })
+  startTimers()
+})
+
+/* 积分刷新开关：自动（5 分钟）／手动。手动模式下只在用户点的时候查上游。 */
+const creditsBtn = $('credits-mode')
+function paintCreditsMode() {
+  creditsBtn.textContent = creditsMode === 'auto' ? '积分 自动 5 分' : '积分 仅手动'
+  creditsBtn.title = creditsMode === 'auto'
+    ? '积分对每个账号都是一次真实上游请求，自动模式 5 分钟查一次。点一下改成只手动查。'
+    : '积分只在你点的时候查：点「刷新」或本按钮立刻查一次。点一下恢复自动。'
+}
+paintCreditsMode()
+creditsBtn.addEventListener('click', async () => {
+  creditsMode = creditsMode === 'auto' ? 'manual' : 'auto'
+  localStorage.setItem('gateway:credits-mode', creditsMode)
+  paintCreditsMode()
+  if (creditsMode === 'auto') await load({ cold: true, credits: 'force' })
+  else renderPollNote()
+})

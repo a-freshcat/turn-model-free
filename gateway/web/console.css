@@ -172,6 +172,8 @@ html, body {
 .btn.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
 .btn.ghost { background: none; border-color: transparent; color: var(--ink-3); }
 .btn.ghost:hover { background: rgba(42,39,35,.05); color: var(--ink-2); }
+/* 条带里的小开关：与正文同高，不把那一行撑开。 */
+.btn.slim { height: 22px; padding: 0 8px; font-size: 11px; font-weight: 400; }
 
 .search { position: relative; display: flex; align-items: center; }
 .search input {
@@ -338,6 +340,23 @@ html, body {
 }
 .reset-strip-head span { font-weight: 400; color: var(--ink-3); font-size: 11px; }
 .reset-strip-head .spacer { flex: 1; }
+/* 轮询状态一行小字：说清「下一轮什么时候来」，省得用户不知道页面还在不在跟。 */
+.poll-note { font-variant-numeric: tabular-nums; }
+.poll-note[data-paused="1"] { color: var(--amber); }
+
+/* 说明段：左对齐、不抢视觉重点，和 .notice 的居中提示分开。 */
+.guide {
+  padding: 0 0 6px;
+  margin: 2px 0 0;
+  font-size: 11.5px; line-height: 1.8; color: var(--ink-2);
+  text-align: left;
+}
+.guide code {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--paper-deep); padding: 1px 5px; border-radius: 4px;
+}
+.view .card .guard-row { border-bottom: 1px solid var(--line-soft); }
+.view .card .notice { border: none; background: none; padding: 0; }
 
 .reset-grid {
   display: grid;

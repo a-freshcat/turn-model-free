@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>turn-model-free · 号池控制台</title>
-<link rel="stylesheet" href="/assets/console.css?v=1.3.1">
+<link rel="stylesheet" href="/assets/console.css?v=1.3.2">
 </head>
 <body data-theme="paper">
 
@@ -98,6 +98,7 @@
       <div class="rail-group-label">运维</div>
       <button class="rail-item" data-view="logs"><span class="rail-ico">≡</span>调用保护</button>
       <button class="rail-item" data-view="settings"><span class="rail-ico">⚙</span>接入设置</button>
+      <button class="rail-item" data-view="launcher"><span class="rail-ico">▣</span>桌面启动</button>
 
       <div class="rail-foot">
         <div class="rail-foot-row"><span>调用保护</span><b id="foot-guard">—</b></div>
@@ -137,8 +138,11 @@
 
         <div class="reset-strip" id="reset-strip">
           <div class="reset-strip-head">
-            配额重置倒计时 <span>取池内最早重置时刻 · 每 10 秒刷新</span>
+            配额重置倒计时 <span>取池内最早重置时刻 · 每 10 秒走格</span>
             <div class="spacer"></div>
+            <button type="button" class="btn ghost slim" id="credits-mode"
+                    title="积分对每个账号都是一次真实上游请求。自动 = 每 5 分钟一次；手动 = 只在你点的时候查。">积分 自动 5 分</button>
+            <span id="poll-note" class="poll-note">—</span>
             <span id="reset-note"></span>
           </div>
           <div class="reset-grid" id="reset-grid"></div>
@@ -188,6 +192,43 @@
           <div class="main-title-note">把本机网关接到任意 OpenAI 兼容客户端</div>
         </div>
         <div id="settings-host"></div>
+      </section>
+
+      <!-- 桌面启动 -->
+      <section class="view" id="view-launcher" hidden>
+        <div class="main-head">
+          <div class="main-title">桌面启动</div>
+          <div class="main-title-note">三种启动方式，互斥地占用同一个端口</div>
+        </div>
+
+        <div class="card" style="padding:14px 16px; line-height:1.85">
+          <div class="guard-row" style="padding:6px 0"><span><b>TurnModelFree.exe</b></span><b>双击即开 · 无黑窗口</b></div>
+          <div class="guide">发布包根目录里的 <code>TurnModelFree.exe</code> 用 <code>pythonw</code> 静默拉起
+            桌面窗口，没有控制台。关窗口时服务一起退出。要在桌面放快捷方式：
+            <code>powershell -File scripts\install-shortcut.ps1</code>（加 <code>-StartMenu</code> 也进开始菜单）。</div>
+
+          <div class="guard-row" style="padding:6px 0; margin-top:10px"><span><b>launch-desktop.cmd</b></span><b>排障入口 · 带黑窗口</b></div>
+          <div class="guide">同样的桌面窗口，但保留控制台：会打印网关地址与 Key，
+            出错时错误也在这里。exe 起不来时双击它看原因。它<b>不该</b>被删掉。</div>
+
+          <div class="guard-row" style="padding:6px 0; margin-top:10px"><span><b>launch-web.cmd</b></span><b>只开浏览器 · 不开窗口</b></div>
+          <div class="guide">起网关并打开系统浏览器指向本页。适合只用浏览器、不想要独立窗口的场合。</div>
+
+          <div class="notice" style="margin-top:12px; text-align:left">
+            三者抢同一个端口（默认 <code>8199</code>）。已经开着一个时再开第二个，
+            新进程会先尝试接管上一次没关干净的自身实例；占端口的是别的程序时，
+            报错会点名端口与占用进程。
+            <br>换端口：<code>TurnModelFree.exe --port 8300</code> /
+            <code>launch-desktop.cmd --port 8300</code>。
+          </div>
+        </div>
+
+        <div class="card" style="padding:14px 16px; line-height:1.85; margin-top:12px">
+          <div class="guard-row" style="padding:6px 0"><span>网关端口</span><b id="launch-port">—</b></div>
+          <div class="guard-row" style="padding:6px 0"><span>本次启动方式</span><b id="launch-kind">—</b></div>
+          <div class="guard-row" style="padding:6px 0"><span>诊断日志</span><b><code>gateway\.gateway-desktop.log</code></b></div>
+          <div class="guard-row" style="padding:6px 0"><span>密钥文件</span><b><code>gateway\.gateway-api-key</code></b></div>
+        </div>
       </section>
 
     </main>
@@ -240,6 +281,6 @@
   </div>
 </div>
 
-<script type="module" src="/assets/console.mjs?v=1.3.1"></script>
+<script type="module" src="/assets/console.mjs?v=1.3.2"></script>
 </body>
 </html>

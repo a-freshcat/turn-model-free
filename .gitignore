@@ -33,3 +33,7 @@ skills/**/config.json
 # channel-pack 的已打补丁副本（由 gateway/scripts/patch-raccoon-cooldown.mjs
 # 从已安装插件现算生成，近 3MB）。它不是源码，重建即可，不入库。
 gateway/.pack/
+
+# 编译出来的启动器（由 scripts/build-launcher.ps1 从 launcher/*.cs 生成，
+# 打包时现编并塞进 zip）。源码与图标入库，exe 不入库。
+launcher/*.exe

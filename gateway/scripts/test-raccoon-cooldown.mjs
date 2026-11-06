@@ -7,6 +7,11 @@
  * 那样测的是副本的逻辑，不是实际会加载的代码。
  *
  *   node scripts/test-raccoon-cooldown.mjs
+ *   node scripts/test-raccoon-cooldown.mjs <隔离目录>/pack.js
+ *
+ * 默认读 `gateway/.pack/pack.raccoon-cooldown.js`（默认不启用，通常不存在）。
+ * 显式给路径就能验证 `--isolated-dir` 产出的那一份：补丁真正的加载形态是
+ * 「整目录复制后加载副本」，所以行为验证也该对着那份跑。
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -15,10 +20,12 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
-const PATCHED = join(ROOT, '.pack', 'pack.raccoon-cooldown.js')
+const PATCHED = process.argv[2]
+  ? resolve(process.argv[2])
+  : join(ROOT, '.pack', 'pack.raccoon-cooldown.js')
 
 if (!existsSync(PATCHED)) {
-  console.error(`副本不存在，先跑 node scripts/patch-raccoon-cooldown.mjs\n缺少: ${PATCHED}`)
+  console.error(`副本不存在，先跑 node scripts/patch-raccoon-cooldown.mjs --isolated-dir DIR\n缺少: ${PATCHED}`)
   process.exit(2)
 }
 

@@ -2,3 +2,6 @@
 *.png binary
 *.woff2 binary
 *.wasm binary
+# 启动器图标与编译产物：二进制，不要做行尾转换
+*.ico binary
+*.exe binary

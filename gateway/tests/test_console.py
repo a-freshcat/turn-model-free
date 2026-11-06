@@ -103,6 +103,34 @@ class ConsolePageTests(unittest.IsolatedAsyncioTestCase):
         # 不允许退回自己 parse 本地化文本（月/日顺序会错）。
         self.assertNotIn("new Date(item.reset_time)", module)
 
+    async def test_console_exchanges_the_desktop_bootstrap_token(self):
+        """桌面端用 `#bootstrap=` 打开本页时必须静默换会话。
+
+        重写控制台时漏了这条，导致双击 exe 开出来的窗口照样弹「粘贴网关密钥」，
+        用户以为快捷方式坏了。旧界面（app.mjs）认这个 hash，控制台必须一样认。
+        """
+        module = (await self.client.get("/assets/console.mjs")).text
+        self.assertIn("bootstrap", module)
+        self.assertIn("exchangeBootstrap", module)
+        # 换完必须把令牌从地址栏抹掉：刷新一次就失效，也不该留在截图里。
+        self.assertIn("history.replaceState", module)
+
+    async def test_console_keeps_hot_and_cold_reads_apart(self):
+        """热数据（本机）与冷数据（账号/积分/模型）必须分开计时。
+
+        旧实现每 15 秒把所有渠道的积分重查一遍：6 个渠道约 14 次调用 / 15 秒，
+        其中 `credits.balances` 对每个账号都是一次真实上游请求。这条断言守住
+        「热数据一轮只有一个计数周期、且不再整轮 load」。
+        """
+        module = (await self.client.get("/assets/console.mjs")).text
+        self.assertNotIn("setInterval(() => { if (connected) void load() }, 15_000)", module)
+        self.assertIn("HOT_MS", module)
+        self.assertIn("COLD_MS", module)
+        self.assertIn("CREDITS_MS", module)
+        # 窗口不可见就停表：最小化一夜的窗口不该继续每分钟打上游。
+        self.assertIn("visibilitychange", module)
+        self.assertIn("document.hidden", module)
+
 
 class ResetEpochTests(unittest.TestCase):
     def test_iso_strings_are_parsed_directly(self):
