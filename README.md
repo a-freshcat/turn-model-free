@@ -1,13 +1,13 @@
-# free-m-clone
+# turn-model-free
 
-本机模型账号管理与 OpenAI 兼容 API 网关。通过网页统一管理账号、查看额度、选择模型和测试流式对话。
+本机模型账号管理与 OpenAI 兼容 API 网关。提供独立桌面客户端与网页端双模式，统一管理账号、查看三个独立配额池用量、选择模型并接入各类 OpenAI 兼容客户端。
 
-**当前版本：v1.2.13** · [下载最新版本](https://github.com/a-freshcat/free-m-clone/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.3.0** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
 
 
 ## 只用技能，接入现成网关
 
-不想部署号池，可在 [v1.2.13 Release](https://github.com/a-freshcat/free-m-clone/releases/tag/v1.2.13) 单独下载 **gateway-web-search-v1.2.13.zip**（搜索）或 **gateway-imagegen-v1.2.13.zip**（生图）。这些是独立技能，支持 DSH、Codex 等能加载 SKILL.md 并执行 Python 的客户端；无需下载整个项目或安装服务端依赖。
+不想部署号池，可在 [Releases](https://github.com/a-freshcat/turn-model-free/releases/latest) 单独下载 **gateway-web-search**（搜索）或 **gateway-imagegen**（生图）。这些是独立技能，支持 DSH、Codex 等能加载 SKILL.md 并执行 Python 的客户端；无需下载整个项目或安装服务端依赖。
 
 配置服务提供方给出的 **网关地址、调用 Key、图像模型名**，即可使用自建或经授权共享的服务。无需交换 Google 登录态，也无需额外配置 OpenAI/DeepSeek Key。技能不附送账号或配额；共享消耗提供方账号的实际配额。
 
@@ -30,21 +30,21 @@
 
 ## 安装与启动
 
-下载并解压 [Release](https://github.com/a-freshcat/free-m-clone/releases/latest)，或克隆仓库：
+下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.3.0.zip` 桌面端与 `turn-model-free-web-v1.3.0.zip` 网页端独立包），或克隆仓库：
 
 ```powershell
-git clone https://github.com/a-freshcat/free-m-clone.git
-cd free-m-clone
+git clone https://github.com/a-freshcat/turn-model-free.git
+cd turn-model-free
 python -m venv gateway/.venv
 gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
-.\launch-web.cmd
+.\launch-desktop.cmd
 ```
 
-首次安装依赖后，后续直接双击根目录 **`launch-web.cmd`**。启动器会打开管理页：
+首次安装依赖后：
+- 双击根目录 **`launch-desktop.cmd`**：启动独立原生桌面窗口（基于 WebView2，关闭窗口自动回收服务，启动时自动接管旧端口）；
+- 双击根目录 **`launch-web.cmd`**：启动网页端管理页（**http://127.0.0.1:8199/**）。
 
-**http://127.0.0.1:8199/**
-
-保持启动窗口开启，按 `Ctrl+C` 停止。更换端口或仅启动服务：
+更换端口或仅启动后台服务：
 
 ```cmd
 launch-web.cmd --port 8200
