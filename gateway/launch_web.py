@@ -8,6 +8,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -90,17 +91,13 @@ class PortInUse(RuntimeError):
     """请求的端口已被别的进程监听。"""
 
 
-def _port_owner(port: int) -> str:
-    """尽力说出端口上现在是谁在监听；问不到就返回空串。
-
-    只用来把报错写清楚。拿不到进程信息（权限不足、netstat 不可用）不是错误——
-    那句话仍然告诉用户「端口被占」，只是少了进程名。
-    """
+def _port_owner_info(port: int) -> tuple[str, str]:
+    """返回 (pid, process_name)；获取失败返回 ("", "")。"""
     try:
         listing = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
                                  text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return "", ""
     pid = ""
     for line in (listing.stdout or "").splitlines():
         parts = line.split()
@@ -110,14 +107,57 @@ def _port_owner(port: int) -> str:
             pid = parts[-1]
             break
     if not pid:
-        return ""
+        return "", ""
     try:
         probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                                capture_output=True, text=True, timeout=5)
         name = (probe.stdout or "").strip().split(",")[0].strip('"')
     except (OSError, subprocess.SubprocessError):
         name = ""
+    return pid, name
+
+
+def _port_owner(port: int) -> str:
+    """尽力说出端口上现在是谁在监听；问不到就返回空串。
+
+    只用来把报错写清楚。拿不到进程信息（权限不足、netstat 不可用）不是错误——
+    那句话仍然告诉用户「端口被占」，只是少了进程名。
+    """
+    pid, name = _port_owner_info(port)
+    if not pid:
+        return ""
     return f"PID {pid}" + (f"（{name}）" if name else "")
+
+
+def _try_takeover_previous_gateway(port: int) -> bool:
+    """如果端口被上一个未退出的自身网关实例占用，尝试优雅关闭或接管。
+
+    仅当目标端口健康接口明确响应且占用者为 python 进程时执行清理，
+    避免用户重复双击或旧窗口残留时报端口冲突。
+    """
+    if not _check_health(f"http://127.0.0.1:{port}"):
+        return False
+    pid, name = _port_owner_info(port)
+    if not pid:
+        return False
+    if name and "python" not in name.lower():
+        return False
+    print(f"检测到端口 {port} 上存在旧网关实例（PID {pid}），正在自动接管重启...", flush=True)
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
+                           capture_output=True, check=False, timeout=5)
+        else:
+            import signal
+            os.kill(int(pid), signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for _ in range(30):
+        time.sleep(0.1)
+        if _port_available(port):
+            print(f"已成功释放旧网关，正在启动新实例...\n", flush=True)
+            return True
+    return False
 
 
 def port_in_use_message(port: int) -> str:
@@ -222,13 +262,11 @@ def main() -> int:
         os.environ["GATEWAY_API_KEY"] = _load_or_create_api_key()
 
     # 先探端口，再打印「Mode / 密钥 / 请保持窗口打开」。
-    #
-    # 顺序很重要：原来是在 serve() 里 bind 失败，于是窗口先显示密钥、再报错，
-    # 看起来像「已经起来了只是有点问题」。端口冲突是启动前的确定失败，应该在
-    # 任何「看起来成功了」的输出之前就被拦下。
+    # 若端口被自身旧网关占用，先尝试自动接管清理；若仍被占则报错退出。
     if not _port_available(args.port):
-        print(port_in_use_message(args.port), file=sys.stderr)
-        return 1
+        if not _try_takeover_previous_gateway(args.port):
+            print(port_in_use_message(args.port), file=sys.stderr)
+            return 1
 
     print("Mode: " + ("configured upstream accounts" if account_path != ROOT / "accounts.demo.json" else "offline demo account pool"))
     print("Gateway API key (manual dashboard login or /docs -> Authorize):")
