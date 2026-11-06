@@ -8,14 +8,10 @@ When the native window is closed, the application and backend terminate cleanly.
 """
 
 import argparse
-import logging
 import os
 import sys
 import threading
 import time
-import traceback
-from copy import copy
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -35,25 +31,6 @@ from launch_web import (
 )
 
 
-class DiagnosticFormatter(logging.Formatter):
-    def format(self, record):
-        safe_record = copy(record)
-        safe_record.exc_text = None
-        return super().format(safe_record)
-
-    def formatException(self, exc_info):
-        def format_branch(error, tb, depth):
-            indent = "  " * depth
-            yield indent + type(error).__name__
-            for frame in traceback.extract_tb(tb)[-12:]:
-                yield f"{indent}{Path(frame.filename).name}:{frame.lineno} {frame.name}"
-            if isinstance(error, BaseExceptionGroup) and depth < 3:
-                for child in error.exceptions[:4]:
-                    yield from format_branch(child, child.__traceback__, depth + 1)
-
-        return "\n".join(format_branch(exc_info[1], exc_info[2], 0))
-
-
 class ServerThread(threading.Thread):
     def __init__(self, port: int):
         super().__init__(daemon=True)
@@ -69,25 +46,7 @@ class ServerThread(threading.Thread):
         self.server = uvicorn.Server(config)
 
     def run(self):
-        # The desktop launcher may have no attached console.
-        try:
-            handler = RotatingFileHandler(ROOT / '.gateway-desktop.log', maxBytes=512_000,
-                                          backupCount=2, encoding='utf-8')
-        except OSError:
-            logging.getLogger(__name__).warning('Unable to open desktop diagnostic log')
-            self.server.run()
-            return
-        handler.setFormatter(DiagnosticFormatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
-        loggers = [logging.getLogger(name) for name in ('antigravity_driver', 'uvicorn.error')]
-        for logger in loggers:
-            logger.addHandler(handler)
-        try:
-            loggers[1].warning('Desktop diagnostic log enabled on port %s', self.port)
-            self.server.run()
-        finally:
-            for logger in loggers:
-                logger.removeHandler(handler)
-            handler.close()
+        self.server.run()
 
     def stop(self):
         self.server.should_exit = True

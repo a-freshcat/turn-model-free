@@ -17,7 +17,7 @@ class Account(BaseModel):
 
     id: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
     channel: Literal["codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
-                     "trae", "cline", "raccoon", "minimax", "antigravity"] = "buddy"
+                     "trae", "cline", "loomy", "raccoon", "minimax", "zcode", "antigravity"] = "buddy"
     nickname: str = Field(default="", max_length=64)
     driver: Literal["openai", "demo", "antigravity"] = "openai"
     credential_id: str | None = Field(default=None, pattern=r"^ag-[a-f0-9]{24}$")
@@ -177,6 +177,7 @@ def load_settings() -> Settings:
                 "max_concurrency", "tencent_prompt_level", "cooldown_seconds", "max_retries",
                 "proxy", "jitter_ms",
                 "pool_wait_seconds", "first_output_timeout_seconds", "stream_timeout_seconds",
+                "network_cooldown_seconds", "network_cooldown_max_seconds",
             } else "<field>" for part in err["loc"]) or "<root>"
             for err in exc.errors(include_input=False, include_context=False, include_url=False)
         )
