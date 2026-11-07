@@ -38,6 +38,7 @@ class AntigravityTests(unittest.IsolatedAsyncioTestCase):
         self.path.write_text('{"accounts":[]}', encoding="utf-8")
         self.pool = AccountManager(Settings(accounts=[]))
         self.calls, self.refreshes, self.generates = [], 0, 0
+        self.native_headers = []
         self.fail_catalog = False
         self.invalid_grant = False
         self.first_401 = False
@@ -89,6 +90,7 @@ class AntigravityTests(unittest.IsolatedAsyncioTestCase):
             if self.first_401 and self.generates == 1:
                 return httpx.Response(401, json={"error": {"code": 401}})
             self.native_bodies.append(json.loads(request.content))
+            self.native_headers.append(dict(request.headers))
             candidate = {"index": 0, "content": {"role": "model", "parts": [{"text": "Hello"}]},
                          "finishReason": "STOP"}
             meta = {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5}
@@ -271,6 +273,29 @@ class AntigravityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["functionCall"]["args"], {"city": "SG"})
         self.assertEqual(call["thoughtSignature"], "fixture-signature")
         self.assertEqual(request["contents"][2]["parts"][0]["functionResponse"]["name"], "weather")
+
+    async def test_antigravity_request_carries_account_device_headers(self):
+        """Antigravity 出站必须能带账号级设备头。
+
+        以前只有 `openai` 驱动会把 `device_headers` 拼进请求，原生路径只发
+        Authorization / User-Agent / Accept / Accept-Encoding 四个头 —— 每个
+        实例的指纹完全一样，是最好识别的那一类。
+        """
+        await self.authorize()
+        self.pool.settings.accounts[0].device_headers = {"X-Client-Version": "2.29.0",
+                                                         "X-Device-Id": "fixture-device"}
+        self.pool.settings.accounts[0].user_agent = "antigravity/hub/2.29.0 (aideunit; windows_amd64)"
+        response = await self.client.post("/v1/chat/completions",
+            json={"model": "antigravity/gemini-4-argon-high", "messages": [
+                {"role": "user", "content": "hi"}], "stream": False},
+            headers={"Authorization": "Bearer oauth-test-key"})
+        self.assertEqual(response.status_code, 200, response.text)
+        sent = self.native_headers[-1]
+        self.assertEqual(sent.get("x-client-version"), "2.29.0")
+        self.assertEqual(sent.get("x-device-id"), "fixture-device")
+        self.assertEqual(sent.get("user-agent"), "antigravity/hub/2.29.0 (aideunit; windows_amd64)")
+        # 鉴权头不能被设备头覆盖：它排在 device_headers 之后。
+        self.assertTrue(sent.get("authorization", "").startswith("Bearer "))
 
     async def test_invalid_request_does_not_cool_account(self):
         await self.authorize()

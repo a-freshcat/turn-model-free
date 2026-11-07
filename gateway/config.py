@@ -50,7 +50,12 @@ class Account(BaseModel):
     # 未配置时回落到全局 GATEWAY_UPSTREAM_PROXY。
     proxy: str | None = None
     # 请求间随机抖动（毫秒）。人工操作的间隔从不整齐，固定间隔是自动化指纹。
-    jitter_ms: int = Field(default=0, ge=0, le=5000)
+    #
+    # 默认 300ms 而不是 0：这项能力以前存在但默认关闭，等于没有 —— 没人会为了
+    # 「降低被判定为自动化的概率」专门去翻配置。300ms 的均值对交互式对话无感
+    # （页面本来就有网络往返），却足以让请求间隔不再是一条直线。
+    # 显式写 0 仍然可以关掉（比如要做延迟基准测试）。
+    jitter_ms: int = Field(default=300, ge=0, le=5000)
 
     @field_validator("channel", mode="before")
     @classmethod

@@ -112,10 +112,45 @@ def test_invalid_proxy_rejected(bad):
         _account(proxy=bad)
 
 
-def test_jitter_default_off_and_bounded():
-    assert _account().jitter_ms == 0
+def test_jitter_is_on_by_default_and_bounded():
+    """默认开启：这项能力以前存在但默认 0，等于没有。
+
+    固定间隔是自动化指纹；300ms 的均值对交互式对话无感，却足以让请求间隔
+    不再是一条直线。
+    """
+    assert _account().jitter_ms == 300
     with pytest.raises(Exception):
         _account(jitter_ms=6000)
+    # 显式关掉仍然允许（延迟基准测试需要）。
+    assert _account(jitter_ms=0).jitter_ms == 0
+
+
+def test_jitter_does_not_consume_the_first_output_timeout_budget():
+    """抖动必须发生在超时预算之外。
+
+    抖动是本地为了打散节奏做的故意延迟，不是上游成本。它以前嵌在
+    `send_upstream_request` 里，而那段代码运行在 `failover` 的
+    `anyio.fail_after(first_output_timeout_seconds)` 之内 —— 默认 300ms 抖动
+    会让超时很短的调用直接超时，并被记成账号故障（实测两个超时测试因此变红）。
+
+    这条测试盯的是代码位置：抖动只在 `failover` 里、计时开始之前调用，
+    不能在 `send_upstream_request` 内部。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    upstream = (root / "upstream_client.py").read_text(encoding="utf-8")
+    manager = (root / "account_manager.py").read_text(encoding="utf-8")
+
+    # send_upstream_request 里不得再调用 _apply_jitter
+    body = upstream[upstream.index("async def send_upstream_request"):]
+    body = body[:body.index("\n        client = self._client(account)")]
+    assert "_apply_jitter(" not in body, "抖动不能在超时预算内执行"
+
+    # failover 里必须在 fail_after 之前调用
+    failover = manager[manager.index("async def failover"):]
+    jitter_at = failover.index("jitter_before_request(lease.account)")
+    timeout_at = failover.index("anyio.fail_after(")
+    assert jitter_at < timeout_at, "抖动必须排在计时之前"
 
 
 def test_jitter_actually_delays():

@@ -1,5 +1,34 @@
 # 版本变更
 
+## v1.4.2 — 2026-11-08
+
+降低「被判定为自动化客户端」的特征。这两项都只改本地出站行为，不影响对话结果。
+
+### 1. 请求抖动默认开启（300ms）
+
+`jitter_ms` 以前存在但默认 `0`，等于没有 —— 没人会为了「降低被判定为自动化的概率」专门去翻配置。固定间隔是自动化指纹里最容易观察的一条。
+
+现在默认 300ms 随机延迟。均值 300ms 对交互式对话无感（本来就有一个网络往返），但足以让请求间隔不再是一条直线。显式写 `0` 仍然可以关掉（延迟基准测试需要）。
+
+**顺带修掉一个语义错误**：抖动原来嵌在 `send_upstream_request` 里，而那段代码运行在 `failover` 的 `anyio.fail_after(first_output_timeout_seconds)` 之内。默认开启后，300ms 抖动会吃掉「等上游出第一个字」的预算，把短超时调用直接判成超时并记到账号账上（实测两条超时测试立刻变红）。抖动是本地故意延迟，不是上游成本，已移到计时开始之前。
+
+### 2. Antigravity 出站支持账号级设备头
+
+以前只有 `openai` 驱动会把 `device_headers` 拼进请求；Antigravity 原生路径只发 `Authorization` / `User-Agent` / `Accept` / `Accept-Encoding` 四个头，每个实例的指纹完全一致。
+
+现在 `device_headers` 和账号级 `user_agent` 都会进入 Antigravity 请求。顺序上设备头先铺、协议必需头后叠，鉴权不会被一个写错的设备头覆盖。
+
+```json
+{
+  "id": "ag-xxxx",
+  "channel": "antigravity",
+  "user_agent": "antigravity/hub/2.29.0 (aidev_client; windows_amd64)",
+  "device_headers": {"X-Client-Version": "2.29.0"}
+}
+```
+
+`device_headers` 仍拒绝保留头名（`authorization`、`cookie`、`user-agent`、`host` 等），避免用它改写鉴权或破坏请求。
+
 ## v1.4.1 — 2026-11-08
 
 ### 1. 修复「真实对话第二句就 400」（`thought_signature`）

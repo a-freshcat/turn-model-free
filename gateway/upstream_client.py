@@ -288,7 +288,13 @@ class UpstreamClient:
         guard = getattr(self, 'protection', None)
         if guard is not None:
             await guard.before_send()
-        await _apply_jitter(account)
+        # 抖动**不在这里**做。`send_upstream_request` 是在 `failover` 的
+        # `anyio.fail_after(...)` 里被调用的，而那段超时是「等上游出第一个字」
+        # 的预算。把本地的故意延迟塞进去，等于让抖动吃掉上游等待时间：默认
+        # 300ms 抖动会让 `first_output_timeout_seconds` 很短的调用直接超时，
+        # 并把它记成账号故障。
+        #
+        # 正确的插入点是拿到租约之后、开始计时之前 —— 见 `account_manager.failover`。
         if account.driver == "antigravity":
             from antigravity_driver import send_native
             if self.antigravity is None:

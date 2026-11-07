@@ -106,6 +106,15 @@ class Lease:
                 self.pool.condition.notify_all()
 
 
+def jitter_before_request(account: Account) -> Awaitable[None]:
+    """请求前的随机延迟。
+
+    延迟导入：`upstream_client` 反过来要 `config`，模块级导入会成环。
+    """
+    from upstream_client import _apply_jitter
+    return _apply_jitter(account)
+
+
 class AccountManager:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -203,6 +212,10 @@ class AccountManager:
                     raise
                 tried.add(lease.account.id)
                 try:
+                    # 抖动在这里、超时预算之外：它是本地为了打散请求节奏而做的
+                    # 故意延迟，不是上游的成本。放进 `fail_after` 里就会吃掉
+                    # 「等上游出第一个字」的预算，把抖动记成账号超时。
+                    await jitter_before_request(lease.account)
                     with anyio.fail_after(timeout_seconds if timeout_seconds is not None
                                           else self.settings.first_output_timeout_seconds):
                         result = await attempt(lease, current)

@@ -370,11 +370,17 @@ async def send_native(auth, client, account, messages, stream, *, model, options
     response = None
     try:
         for attempt in range(2):
+            headers = {
+                # 账号自带的设备头先铺，再叠加协议必需的头。顺序有意义：必需头
+                # 在后，就不会被一个写错的 device_headers 覆盖掉鉴权。
+                **account.device_headers,
+                "Authorization": "Bearer " + credential["access_token"],
+                "User-Agent": account.user_agent or auth.user_agent,
+                "Accept": "text/event-stream" if stream else "application/json",
+                "Accept-Encoding": "identity",
+            }
             response = await client.send(client.build_request("POST", API_BASE + path,
-                headers={"Authorization": "Bearer " + credential["access_token"],
-                         "User-Agent": auth.user_agent,
-                         "Accept": "text/event-stream" if stream else "application/json",
-                         "Accept-Encoding": "identity"}, json=envelope,
+                headers=headers, json=envelope,
                 timeout=httpx.Timeout(None, connect=5, pool=2, write=15)), stream=True)
             lifetime.push_async_callback(response.aclose)
             if response.status_code != 401 or attempt:
