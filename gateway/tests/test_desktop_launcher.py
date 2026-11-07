@@ -160,6 +160,42 @@ class LauncherBuildTests(unittest.TestCase):
             self.assertIn(size, sizes, f"图标缺少 {size} 尺寸：{sorted(sizes)}")
 
 
+class HiddenChildProcessTests(unittest.TestCase):
+    """「exe 已经藏起来了，后台还挂着一个黑框」的回归测试。
+
+    根因不在启动器，在 Python 侧：`pythonw.exe` 自己没有控制台，但
+    `create_subprocess_exec` 起 node 桥时没传 `creationflags`，Windows 就给
+    node 新开一个控制台。用户看到的是那个黑框，启动器再干净也挡不住它。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = (GATEWAY / "bridge_client.py").read_text(encoding="utf-8")
+        cls.web = (GATEWAY / "launch_web.py").read_text(encoding="utf-8")
+
+    def test_bridge_spawns_node_without_console(self):
+        self.assertIn("_hidden_child_kwargs", self.bridge)
+        self.assertIn("**_hidden_child_kwargs()", self.bridge)
+        self.assertIn("CREATE_NO_WINDOW", self.bridge)
+        # 不能退回「什么都不传」：那正是缺陷本身。
+        self.assertNotIn(
+            "stderr=asyncio.subprocess.PIPE, env=env, cwd=str(ROOT),\n            )",
+            self.bridge)
+
+    def test_helper_is_a_noop_off_windows(self):
+        """非 Windows 上不能传 creationflags —— 那个参数不存在，会 TypeError。"""
+        self.assertIn('if os.name != "nt":', self.bridge)
+        self.assertIn("return {}", self.bridge)
+
+    def test_one_shot_commands_are_also_hidden(self):
+        """netstat / tasklist / taskkill / icacls 在 pythonw 下也会各闪一个黑框。"""
+        self.assertIn("def _hidden(", self.web)
+        for command in ('"netstat"', '"tasklist"', '"taskkill"', '"icacls"'):
+            self.assertIn(command, self.web)
+        self.assertEqual(self.web.count("**_hidden()"), 4,
+                         "四个一次性子进程都要带隐藏标志")
+
+
 class ReleasePackagingTests(unittest.TestCase):
     """发版脚本必须把启动器带上，且绝不夹带本机凭据。"""
 

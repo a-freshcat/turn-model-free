@@ -34,7 +34,9 @@ internal static class TurnModelFreeLauncher
     private static int Main(string[] args)
     {
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        Trace("base=" + baseDir);
         string gatewayDir = FindGatewayDir(baseDir);
+        Trace("gateway=" + (gatewayDir ?? "(null)"));
         if (gatewayDir == null)
         {
             return Fail("找不到 gateway 目录。\r\n\r\n" +
@@ -43,12 +45,14 @@ internal static class TurnModelFreeLauncher
         }
 
         string script = Path.Combine(gatewayDir, "launch_desktop.py");
+        Trace("script=" + script + " exists=" + File.Exists(script));
         if (!File.Exists(script))
         {
             return Fail("找不到启动脚本：\r\n" + script);
         }
 
         string pythonw = FindPythonw(gatewayDir);
+        Trace("pythonw=" + (pythonw ?? "(null)"));
         if (pythonw == null)
         {
             return Fail("没有找到 pythonw.exe。\r\n\r\n" +
@@ -65,7 +69,16 @@ internal static class TurnModelFreeLauncher
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
+            // 抓 stderr：解释器起不来（缺依赖、脚本报错）时，Python 把原因写在这里，
+            // 而 `.gateway-desktop.log` 只有**跑起来之后**才会写。不带这两行，用户看到
+            // 的是一个 20 分钟前的旧日志 + 「退出代码 1」，等于什么都没说。
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
         };
+
+        // 日志的修改时间要在启动**之前**记下来：之后用它判断这次有没有真的写日志。
+        string log = Path.Combine(gatewayDir, ".gateway-desktop.log");
+        DateTime logStamp = File.Exists(log) ? File.GetLastWriteTimeUtc(log) : DateTime.MinValue;
 
         Process child;
         try
@@ -81,22 +94,69 @@ internal static class TurnModelFreeLauncher
             return Fail("启动失败：进程没有起来。");
         }
 
+        var captured = new StringBuilder();
+        child.ErrorDataReceived += (sender, e) => { if (e.Data != null) lock (captured) captured.AppendLine(e.Data); };
+        child.OutputDataReceived += (sender, e) => { if (e.Data != null) lock (captured) captured.AppendLine(e.Data); };
+        child.BeginErrorReadLine();
+        child.BeginOutputReadLine();
+
         child.WaitForExit();
         int code = child.ExitCode;
         child.Dispose();
         if (code == 0) return 0;
 
-        string log = Path.Combine(gatewayDir, ".gateway-desktop.log");
         var message = new StringBuilder();
         message.Append("桌面控制台退出，代码 ").Append(code).Append("。\r\n\r\n");
-        if (File.Exists(log))
+
+        // 解释器根本没加载起来时 stderr 就是全部真相，优先展示它。
+        string stderr;
+        lock (captured) stderr = captured.ToString().Trim();
+        if (stderr.Length > 0)
         {
-            message.Append("最近的诊断日志（").Append(log).Append("）：\r\n\r\n");
-            message.Append(Tail(log, 1600));
+            message.Append("子进程输出：\r\n\r\n");
+            message.Append(Trim(stderr, 1400));
             message.Append("\r\n\r\n");
         }
+
+        bool fresh = File.Exists(log) && File.GetLastWriteTimeUtc(log) > logStamp;
+        if (fresh)
+        {
+            message.Append("最近的诊断日志（").Append(log).Append("）：\r\n\r\n");
+            message.Append(Tail(log, 1200));
+            message.Append("\r\n\r\n");
+        }
+        else if (stderr.Length == 0)
+        {
+            // 既没有新日志也没有 stderr：最典型就是「pythonw 不是这份安装的」。
+            message.Append("这次启动没有产生新的诊断日志，通常说明 Python 环境不对：\r\n")
+                   .Append("实际使用的解释器：").Append(pythonw).Append("\r\n\r\n");
+        }
+
+        if (LooksLikeMissingDependency(stderr))
+        {
+            message.Append("这看起来是缺依赖。装上依赖再试：\r\n\r\n")
+                   .Append("  cd \"").Append(gatewayDir).Append("\"\r\n")
+                   .Append("  python -m venv .venv\r\n")
+                   .Append("  .venv\\Scripts\\python.exe -m pip install -r requirements.txt\r\n\r\n");
+        }
+
         message.Append("要看完整输出，请双击 launch-desktop.cmd（那个黑窗口是排障入口）。");
         return Fail(message.ToString());
+    }
+
+    /// <summary>把 traceback 里最常见的「模块不存在」认出来，好给出可执行的修法。</summary>
+    private static bool LooksLikeMissingDependency(string stderr)
+    {
+        if (string.IsNullOrEmpty(stderr)) return false;
+        return stderr.IndexOf("ModuleNotFoundError", StringComparison.Ordinal) >= 0
+            || stderr.IndexOf("ImportError", StringComparison.Ordinal) >= 0
+            || stderr.IndexOf("No module named", StringComparison.Ordinal) >= 0;
+    }
+
+    private static string Trim(string text, int limit)
+    {
+        if (text.Length <= limit) return text;
+        return "…" + text.Substring(text.Length - limit);
     }
 
     /// <summary>
@@ -122,14 +182,14 @@ internal static class TurnModelFreeLauncher
     }
 
     /// <summary>
-    /// pythonw 优先本包自带的 .venv（分发目录里可能带着），其次环境变量，
-    /// 最后才用 PATH 上的。都找不到就返回 null —— 让调用方说清楚怎么修。
+    /// pythonw 的查找顺序：本包自带 .venv → 同级的 .venv → TMF_PYTHONW → PATH → pyw.exe。
+    ///
+    /// `.venv` 必须排在 PATH 前面：PATH 上那个是不带本项目依赖的通用解释器，用它
+    /// 启动只会得到「退出代码 1 + 一段旧日志」。仓库里编译出来的 exe 旁边没有
+    /// `.venv`，正好会踩这个坑，所以顺序和提示都要写清楚。
     /// </summary>
     private static string FindPythonw(string gatewayDir)
     {
-        string fromEnv = Environment.GetEnvironmentVariable("TMF_PYTHONW");
-        if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
-
         string[] local =
         {
             Path.Combine(gatewayDir, ".venv", "Scripts", "pythonw.exe"),
@@ -137,9 +197,14 @@ internal static class TurnModelFreeLauncher
         };
         foreach (string candidate in local)
         {
-            string full = Path.GetFullPath(candidate);
+            string full;
+            try { full = Path.GetFullPath(candidate); }
+            catch (Exception) { continue; }
             if (File.Exists(full)) return full;
         }
+
+        string fromEnv = Environment.GetEnvironmentVariable("TMF_PYTHONW");
+        if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
 
         string onPath = SearchPath("pythonw.exe");
         if (onPath != null) return onPath;
@@ -218,12 +283,36 @@ internal static class TurnModelFreeLauncher
         }
     }
 
+    /// <summary>把启动过程写进 TMF_LAUNCHER_TRACE 指定的文件（没有该变量就什么都不做）。</summary>
+    private static void Trace(string line)
+    {
+        string path = Environment.GetEnvironmentVariable("TMF_LAUNCHER_TRACE");
+        if (string.IsNullOrEmpty(path)) return;
+        try
+        {
+            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff") + " " + line + "\r\n",
+                               new UTF8Encoding(false));
+        }
+        catch (Exception) { }
+    }
+
     /// <summary>
     /// 失败出口。没有控制台，所以只能靠 MessageBox；自动化测试用
     /// TMF_LAUNCHER_NO_DIALOG=1 关掉它，只留退出码。
+    ///
+    /// `TMF_LAUNCHER_REPORT=<path>` 会把同一段文案写进文件：弹窗在自动化里读不到，
+    /// 而「报错说了什么」恰恰是最该被测试锁住的部分（曾经它只显示一份 20 分钟前
+    /// 的旧日志）。
     /// </summary>
     private static int Fail(string message)
     {
+        Trace("FAIL: " + message.Replace("\r\n", " / "));
+        string report = Environment.GetEnvironmentVariable("TMF_LAUNCHER_REPORT");
+        if (!string.IsNullOrEmpty(report))
+        {
+            try { File.WriteAllText(report, message, new UTF8Encoding(false)); }
+            catch (Exception) { /* 写不进去不影响退出码 */ }
+        }
         if (Environment.GetEnvironmentVariable("TMF_LAUNCHER_NO_DIALOG") != "1")
         {
             try

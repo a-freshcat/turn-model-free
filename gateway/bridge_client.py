@@ -21,10 +21,27 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _hidden_child_kwargs() -> dict:
+    """让 node 子进程**不要**弹出自己的控制台窗口。
+
+    这是「exe 已经藏起来了、后台还挂着一个黑框」的真正原因：Python 侧用
+    `create_subprocess_exec` 起 node 时没传 `creationflags`，Windows 给 node 新开
+    一个控制台（各带一个 conhost.exe）。`pythonw.exe` 本身没有控制台，所以那个
+    黑框完全是这一层凭空造出来的 —— 启动器再干净也挡不住它。
+
+    CREATE_NO_WINDOW 让子进程沿用「无控制台」的环境；node 的流仍走管道，
+    不受影响。非 Windows 平台上这个参数不存在，直接返回空。
+    """
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
 
 
 class BridgeError(RuntimeError):
@@ -108,6 +125,7 @@ class PackBridge:
                 self.node, "--import", loader_url, str(self.script),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, env=env, cwd=str(ROOT),
+                **_hidden_child_kwargs(),
             )
         except (OSError, ValueError) as exc:
             raise BridgeError(f"无法启动登录桥：{exc}") from None

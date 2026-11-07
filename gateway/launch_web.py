@@ -59,7 +59,7 @@ def _load_or_create_api_key() -> str:
             subprocess.run(
                 ["icacls", str(API_KEY_FILE), "/inheritance:r",
                  "/grant:r", os.environ.get("USERNAME", "") + ":F"],
-                capture_output=True, check=False,
+                capture_output=True, check=False, **_hidden(),
             )
         else:
             API_KEY_FILE.chmod(0o600)
@@ -95,7 +95,7 @@ def _port_owner_info(port: int) -> tuple[str, str]:
     """返回 (pid, process_name)；获取失败返回 ("", "")。"""
     try:
         listing = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
-                                 text=True, timeout=5)
+                                 text=True, timeout=5, **_hidden())
     except (OSError, subprocess.SubprocessError):
         return "", ""
     pid = ""
@@ -110,7 +110,7 @@ def _port_owner_info(port: int) -> tuple[str, str]:
         return "", ""
     try:
         probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                               capture_output=True, text=True, timeout=5)
+                               capture_output=True, text=True, timeout=5, **_hidden())
         name = (probe.stdout or "").strip().split(",")[0].strip('"')
     except (OSError, subprocess.SubprocessError):
         name = ""
@@ -127,6 +127,18 @@ def _port_owner(port: int) -> str:
     if not pid:
         return ""
     return f"PID {pid}" + (f"（{name}）" if name else "")
+
+
+def _hidden(**kwargs) -> dict:
+    """给一次性子进程（netstat/tasklist/taskkill/icacls）加上「不弹窗」。
+
+    这些命令平时一闪就过，看起来没影响；但它们是在 `pythonw.exe` 下跑的，
+    没有控制台可继承，Windows 会给每个命令新开一个控制台窗口闪一下。
+    双击 exe 的人看到的「莫名其妙的黑框一闪」就是它们。
+    """
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return kwargs
 
 
 def _try_takeover_previous_gateway(port: int) -> bool:
@@ -146,7 +158,7 @@ def _try_takeover_previous_gateway(port: int) -> bool:
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
-                           capture_output=True, check=False, timeout=5)
+                           capture_output=True, check=False, timeout=5, **_hidden())
         else:
             import signal
             os.kill(int(pid), signal.SIGTERM)
