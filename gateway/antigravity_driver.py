@@ -140,11 +140,7 @@ def strip_legacy_markers(text):
 
 def native_request(messages, options, *, signature_lookup=None, signature_borrow=None):
     contents, system, call_names = [], [], {}
-    last_user_index = -1
-    for idx, msg in enumerate(messages):
-        if msg.get("role") == "user":
-            last_user_index = idx
-    for msg_index, message in enumerate(messages):
+    for message in messages:
         role = message["role"]
         content = message.get("content")
         parts = []
@@ -181,7 +177,6 @@ def native_request(messages, options, *, signature_lookup=None, signature_borrow
             native_role = "user"
         elif role == "assistant":
             native_role = "model"
-            is_open_turn = msg_index > last_user_index
             raw_calls = message.get("tool_calls") or []
             resolved_calls = []
             for call in raw_calls:
