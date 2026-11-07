@@ -43,27 +43,100 @@ function ok(name, condition, detail = '') {
 
 /* ---------------------------------------------------------------- DOM 假件 */
 
-function makeElement(id) {
+/*
+ * 这个桩只做一件事：让 `innerHTML = ...` 里的账号行与行内按钮变成可以点击的
+ * 对象。它**不是**浏览器，只认识本项目 roster 用到的两种形状：
+ *   <div class="acct …" data-id="…"> … <button … data-act="…" …>
+ * 够用来验证「点了领取按钮会发哪几个请求」，不做 CSS、布局或事件冒泡。
+ */
+function parseActions(html) {
+  const buttons = []
+  const re = /<button\b([^>]*)>/g
+  let match
+  while ((match = re.exec(html)) !== null) {
+    const attrs = match[1]
+    const action = /data-act="([^"]*)"/.exec(attrs)
+    if (!action) continue
+    const cls = /class="([^"]*)"/.exec(attrs)
+    const disabled = /\sdisabled(\s|>|=)/.test(attrs + '>')
+    const title = /title="([^"]*)"/.exec(attrs)
+    buttons.push(makeElement(action[1], {
+      classText: cls ? cls[1] : '',
+      disabled,
+      title: title ? title[1] : '',
+    }))
+  }
+  return buttons
+}
+
+function parseRows(html) {
+  const rows = []
+  // 行的判据必须带 data-id：行内还有 `class="acct-avatar"`、`acct-meta` 这些
+  // 前缀相同的子元素，只匹配 `class="acct` 会在第一个子元素处就把行截断。
+  const re = /<div class="acct[^"]*" data-id="([^"]*)">([\s\S]*?)(?=<div class="acct[^"]*" data-id=|$)/g
+  let match
+  while ((match = re.exec(html)) !== null) {
+    const row = makeElement(`acct-${match[1]}`)
+    row.dataset.id = match[1]
+    row.innerHTML = match[2]
+    row.buttons = parseActions(match[2])
+    row.classList.contains = name => /(^|\s)acct(\s|$)/.test('acct') && name === 'acct'
+    rows.push(row)
+  }
+  return rows
+}
+
+function makeElement(id, extra = {}) {
   const element = {
     id,
     textContent: '',
-    innerHTML: '',
+    _html: '',
+    get innerHTML() { return this._html },
+    set innerHTML(value) {
+      this._html = String(value)
+      // 渲染后立刻建出可点的子件，测试才能「点一下按钮」。
+      this.buttons = parseActions(this._html)
+      this.rows = parseRows(this._html)
+    },
     value: '',
     hidden: false,
     disabled: false,
     title: '',
     dataset: {},
     style: {},
-    classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
+    classList: {
+      _on: new Set(),
+      toggle(name, on) { if (on) this._on.add(name); else this._on.delete(name) },
+      add(name) { this._on.add(name) },
+      remove(name) { this._on.delete(name) },
+      contains(name) { return this._on.has(name) },
+    },
     listeners: {},
     addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler) },
     removeEventListener() {},
-    querySelector() { return makeElement(`${id}-child`) },
-    querySelectorAll() { return [] },
+    querySelector(selector) {
+      if (selector === '[data-act="claim"]') {
+        return (this.buttons || []).find(btn => btn.dataset.act === 'claim') || null
+      }
+      const act = /\[data-act="([^"]+)"\]/.exec(selector)
+      if (act) return (this.buttons || []).find(btn => btn.dataset.act === act[1]) || null
+      return makeElement(`${id}-child`)
+    },
+    querySelectorAll(selector) {
+      if (selector === '.acct') return this.rows || []
+      if (selector === '[data-act]') return this.buttons || []
+      const act = /\[data-act="([^"]+)"\]/.exec(selector)
+      if (act) return (this.buttons || []).filter(btn => btn.dataset.act === act[1])
+      return []
+    },
     focus() {},
     click() {},
     appendChild() {},
+    ...extra,
   }
+  // 按钮自己记录 data-act，行内查找依赖它。
+  const act = /^(test|models|refresh|delete|toggle|claim)$/.test(id) ? id : null
+  if (act) element.dataset.act = act
   return element
 }
 
@@ -101,6 +174,9 @@ async function tick(delay) {
 
 const requests = []
 let creditsGeneration = 0
+// 签到相关：领取是一次写操作，要能验证「点了到底发了几次、发给了谁」。
+const claims = []
+let checkinState = false
 
 function quotaPayload() {
   return {
@@ -117,12 +193,33 @@ function quotaPayload() {
   }
 }
 
-function rpcPayload(method) {
+function rpcPayload(method, payload) {
   if (method === 'provider.status') {
     return { ok: true, value: { statuses: {
-      antigravity: { accounts: { total: 1, enabled: 1 }, models: { total: 2, disabled: 0 } },
-      buddy: { accounts: { total: 1, enabled: 1 }, models: { total: 3, disabled: 0 } },
+      antigravity: { accounts: { total: 1, enabled: 1 }, models: { total: 2, disabled: 0 },
+                     capabilities: { claim: false, checkin: false, creditStatus: false,
+                                     balances: true, refresh: true } },
+      buddy: { accounts: { total: 1, enabled: 1 }, models: { total: 3, disabled: 0 },
+               capabilities: { claim: true, checkin: false, creditStatus: true,
+                               balances: true, refresh: true } },
     } } }
+  }
+  if (method === 'credits.status') {
+    // 签到态：第一次读是「今日未签」，领取之后变「今日已签」。
+    return { ok: true, value: { accounts: [{
+      accountId: 'buddy-1',
+      nickname: '埃尔温',
+      status: { todayCheckedIn: checkinState, todayCredit: checkinState ? 200 : 0 },
+    }] } }
+  }
+  if (method === 'credits.claimAll') {
+    claims.push(payload?.provider || '')
+    checkinState = true
+    return { ok: true, value: {
+      results: [{ accountId: 'buddy-1', nickname: '埃尔温',
+                  outcome: { kind: 'claimed', message: '领取成功' } }],
+      summary: { claimed: 1, totalCredit: 200, alreadyClaimed: 0, inactive: 0, failed: 0 },
+    } }
   }
   if (method === 'account.list') {
     return { ok: true, value: { accounts: [
@@ -151,7 +248,7 @@ function fakeFetch(url, options = {}) {
   } else if (url.startsWith('/ui/protection')) {
     payload = { ok: true, paused: false, active_requests: 0, max_active_requests: 2, max_dispatch_per_minute: 20 }
   } else if (url.startsWith('/ui/session')) payload = { ok: true }
-  else if (url.startsWith('/ui/rpc')) payload = rpcPayload(body?.method)
+  else if (url.startsWith('/ui/rpc')) payload = rpcPayload(body?.method, body?.payload)
   else payload = { ok: true }
   return Promise.resolve({
     ok: true,
@@ -299,6 +396,44 @@ await new Promise(resolve => setImmediate(resolve))
 ok('回到前台补一轮', requests.length > 0, JSON.stringify(requests))
 check('回来后定时器重新开始',
   timers.filter(timer => !timer.cleared && timer.kind === 'interval').length >= 1, true)
+
+/* 签到 / 领取：这一块是「点了到底发没发请求」，必须真点。 */
+const roster = elementFor('roster-host')
+const buddyRow = (roster.rows || []).find(row => row.dataset.id === 'buddy-1')
+ok('插件账号行渲染出来了', Boolean(buddyRow), JSON.stringify((roster.rows || []).map(r => r.dataset.id)))
+ok('支持领取的渠道有领取按钮',
+  Boolean(buddyRow?.querySelector('[data-act="claim"]')))
+ok('本机 antigravity 行没有领取按钮（它没有签到接口）',
+  !(roster.rows || []).find(row => row.dataset.id === 'local-a')?.querySelector('[data-act="claim"]'))
+ok('未签到时那行写明「今日未签」', /今日未签/.test(roster.innerHTML), '')
+ok('页面顶部有一键领取', elementFor('claim-all').listeners.click?.length === 1)
+
+// 真点一次行内领取。
+reset()
+const claimBtn = buddyRow.querySelector('[data-act="claim"]')
+await claimBtn.listeners.click[0]()
+await new Promise(resolve => setImmediate(resolve))
+check('点领取发出一次 credits.claimAll', claims.length, 1)
+check('领取打在该账号所属渠道', claims[0], 'buddy')
+check('领取走的是写接口而不是积分查询',
+  requests.filter(item => item.rpc === 'credits.claimAll').length, 1)
+// 领完必须刷新读数：用户点这个就是想看到数字变了。
+ok('领完强制重查积分', requests.some(item => item.rpc === 'credits.balances'))
+
+// 一键领取：只发给声明了 claim 的渠道，别把不支持的那几个也打一遍。
+reset()
+claims.length = 0
+checkinState = false
+await elementFor('claim-all').listeners.click[0]({ currentTarget: elementFor('claim-all') })
+await new Promise(resolve => setImmediate(resolve))
+check('一键领取只打支持签到的渠道', claims, ['buddy'])
+
+/* 不支持签到的渠道不渲染按钮 —— 这是「点了必然失败」的那类按钮。 */
+reset()
+const statusesStub = rpcPayload('provider.status').value.statuses
+check('workbuddy/raccoon 的能力是 false（后端明确没有签到接口）',
+  [statusesStub.buddy.capabilities.claim, statusesStub.antigravity.capabilities.claim],
+  [true, false])
 
 console.log('')
 if (failures.length) {

@@ -289,6 +289,37 @@ function renderKpi() {
 }
 
 /* ---------------------------------------------------------------- 渲染：名册 */
+/* ---------------------------------------------------------------- 渲染：号池 */
+
+/**
+ * 「领取」按钮。
+ *
+ * 三件事要说清，否则按钮点下去用户不知道发生了什么：
+ *   1. 已签到的号仍然可以点 —— 领取是幂等的，重复点只会回「今天已领取」。
+ *      把按钮置灰反而让人以为功能坏了（用户会怀疑是不是没做）。
+ *   2. 正在领取时要显示在途，防止连点触发第二次写请求。
+ *   3. 状态未知时按钮仍然显示，但 title 说明「点一下会现查」。
+ */
+function claimButton(account) {
+  const checkin = account.checkin
+  const checkedIn = Boolean(checkin?.checkedIn)
+  const busy = claiming === account.provider || claiming === 'all'
+  const title = busy
+    ? '正在领取…'
+    : checkedIn
+      ? '今日已领取，重复点击只会再确认一次'
+      : (checkin && checkin.known === false
+          ? '该渠道没有签到状态接口，点一下直接尝试领取'
+          : '领取今日签到积分')
+  return `<button class="mini claim${checkedIn ? ' done' : ''}" data-act="claim"
+    title="${esc(title)}" ${busy ? 'disabled' : ''}>
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2.5 8.5l3.2 3.2 7.3-7.3"></path>
+    </svg>
+    ${busy ? '<span class="claim-spin"></span>' : ''}
+  </button>`
+}
+
 function renderRoster() {
   const host = $('roster-host')
   const needle = filterText.trim().toLowerCase()
@@ -360,6 +391,20 @@ function renderRoster() {
             <span class="note-text muted">${esc(clockText(account.balanceAt))}</span>
           </div>`)
         }
+        // 签到态单独一行：它是「今天能不能领」的判据，不是余额的一部分。
+        // 三种情况必须分开写 —— 已签 / 未签 / 该渠道没有状态端点（未知）。
+        if (account.canClaim) {
+          const checkin = account.checkin
+          const text = !checkin || (checkin.known === false)
+            ? '状态未知'
+            : (checkin.checkedIn ? (checkin.credit > 0 ? `今日已签 +${checkin.credit}` : '今日已签') : '今日未签')
+          const tone = !checkin || checkin.known === false ? 'muted'
+            : (checkin.checkedIn ? 'muted' : 'pending')
+          lines.push(`<div class="pool note-line">
+            <span class="pool-name">签到</span>
+            <span class="note-text ${tone}">${esc(text)}</span>
+          </div>`)
+        }
       } else {
         lines.push(`<div class="pool">
           <span class="pool-name">积分</span>
@@ -414,6 +459,7 @@ function renderRoster() {
       </div>
 
       <div class="row-actions">
+        ${account.canClaim ? claimButton(account) : ''}
         <button class="mini" data-act="test" title="探活测速">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
             <path d="M2 8h3l2-4 2 8 2-4h3"></path>
@@ -842,6 +888,24 @@ async function handleAction(id, act, row) {
     return
   }
 
+  if (act === 'claim') {
+    const btn = row.querySelector('[data-act="claim"]')
+    if (btn) btn.disabled = true
+    claiming = account.provider
+    try {
+      const reply = await rpc('credits.claimAll', { provider: account.provider })
+      const text = claimText(reply.value || {})
+      await load({ cold: true, credits: 'force' })
+      window.alert(`${account.name || id}：${text}`)
+    } catch (error) {
+      window.alert(`领取失败：${error.message}`)
+    } finally {
+      claiming = ''
+      renderRoster()
+    }
+    return
+  }
+
   if (act === 'toggle') {
     const next = account.status === 'disabled'
     try {
@@ -959,6 +1023,13 @@ let coldTimer = null
 // 否则每次心跳都要重查一遍积分。
 let externalRows = []
 
+// 签到（领取）状态：accountId → { checkedIn, credit, at }。
+// 归插件：各家 `checked_in` 字段形状不同，pack.js 已按渠道解析过。
+// 与积分分开存，因为它是**写操作的结果**，不能被积分缓存覆盖掉。
+const checkinById = new Map()
+let lastCheckinAt = 0
+let claiming = ''   // '' | provider | 'all'，防止连点重复领取
+
 const clockText = ts => (ts
   ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
   : '')
@@ -1050,11 +1121,38 @@ async function loadInner({ cold, credits }) {
 
       // 积分对每个账号是一次上游请求，所以和账号列表分开取、按模式与到期判断。
       const wantCredits = credits === 'force' || (credits !== 'skip' && creditsDue(Date.now()))
-      const creditLists = wantCredits
-        ? await Promise.all(pluginProviders.map(provider =>
-            rpc('credits.balances', { provider }).catch(() => null)))
-        : []
+      // 签到状态是冷数据里最便宜的一项（每渠道一次、无逐账号上游），但它是**写操作
+      // 的判据**：不知道今天签没签，就不能给「领取」按钮。所以只在真正需要时查
+      // （冷刷新或刚领取完），不跟着热心跳跑。
+      const wantCheckin = credits === 'force' || credits !== 'skip'
+      const [creditLists, checkinLists] = await Promise.all([
+        wantCredits
+          ? Promise.all(pluginProviders.map(provider =>
+              rpc('credits.balances', { provider }).catch(() => null)))
+          : Promise.resolve([]),
+        wantCheckin
+          ? Promise.all(pluginProviders.map(provider =>
+              rpc('credits.status', { provider }).catch(() => null)))
+          : Promise.resolve([]),
+      ])
       if (wantCredits) lastCreditsAt = Date.now()
+      if (wantCheckin) {
+        lastCheckinAt = Date.now()
+        checkinLists.forEach(reply => {
+          for (const row of reply?.value?.accounts || []) {
+            if (!row?.accountId) continue
+            // `status` 是 pack.js 解析好的形状：可能为 null（该渠道没这个端点），
+            // null 与「今天没签」是两件事，不能合并。
+            const status = row.status || null
+            checkinById.set(row.accountId, {
+              known: status !== null,
+              checkedIn: status ? status.todayCheckedIn === true : false,
+              credit: status ? Number(status.todayCredit || 0) : 0,
+              at: lastCheckinAt,
+            })
+          }
+        })
+      }
       // 这一轮没查积分时沿用上一轮读数：把旧值按账号取回来，别让它变成「无读数」。
       const previousCredits = new Map()
       if (!wantCredits) {
@@ -1078,6 +1176,10 @@ async function loadInner({ cold, credits }) {
         // 拿不到就保持 null（显示「—」），绝不能默认成 0——0 会被读成
         // 「这个账号一个模型都没有」，而事实是我们没查。
         const channelModels = statuses[provider]?.models?.total
+        // 「这个渠道能不能领」以网关回的能力表为准，不看前端静态表：
+        // 静态表描述的是插件 13 家全实现时的状态，与本机实际实现不一致时会
+        // 渲染出点下去必然失败的按钮。
+        const caps = statuses[provider]?.capabilities || {}
         for (const row of reply?.value?.accounts || []) {
           if (!row?.id || seen.has(row.id)) continue
           seen.add(row.id)
@@ -1105,6 +1207,9 @@ async function loadInner({ cold, credits }) {
             balance: credit?.balance ?? cached?.balance ?? null,
             balanceError: credit?.error ?? cached?.balanceError ?? '',
             balanceAt: credit ? lastCreditsAt : (cached?.balanceAt ?? 0),
+            // 领取能力与今日签到态。同一个渠道的所有账号共享能力。
+            canClaim: caps.claim === true,
+            checkin: checkinById.get(row.id) || null,
           })
         }
       })
@@ -1251,6 +1356,75 @@ $('connect-form').addEventListener('submit', async event => {
 /* ---------------------------------------------------------------- 顶部与侧栏动作 */
 // 手动刷新是用户明确要「现在就查」，所以冷热与积分都强制走一遍。
 $('reload').addEventListener('click', () => load({ cold: true, credits: 'force' }))
+
+/**
+ * 把 `credits.claimAll` 的回执翻成人话。
+ *
+ * 插件的 summary 分得很细（claimed / alreadyClaimed / inactive / failed），
+ * 这四个数说的是完全不同的四件事：
+ *   claimed      今天新领到；
+ *   already       今天已经领过（幂等，不是错误）；
+ *   inactive      这家今天没有活动可领（也不是错误，可能压根没开签到）；
+ *   failed        真失败，要带原因。
+ * 以前把它们合并成一句「操作失败」，用户无法判断该不该重试。
+ */
+function claimText(value) {
+  const summary = value?.summary || value || {}
+  const claimed = Number(summary.claimed ?? 0)
+  const already = Number(summary.alreadyClaimed ?? 0)
+  const inactive = Number(summary.inactive ?? 0)
+  const failed = Number(summary.failed ?? 0)
+  const credit = Number(summary.totalCredit ?? 0)
+  const problems = (value?.results || [])
+    .filter(row => row?.outcome?.kind === 'failed')
+    .map(row => `${row.nickname || row.accountId}：${row.outcome.message || '未知原因'}`)
+
+  const bits = []
+  if (claimed > 0) bits.push(`新领 ${claimed} 个${credit > 0 ? `，共 ${credit} 积分` : ''}`)
+  if (already > 0) bits.push(`${already} 个今天已领过`)
+  if (inactive > 0) bits.push(`${inactive} 个今天没有可领活动`)
+  if (failed > 0) bits.push(`${failed} 个失败`)
+  if (!bits.length) bits.push('没有可领取的账号')
+  return bits.join('；') + (problems.length ? `\n${problems.join('\n')}` : '')
+}
+
+$('claim-all').addEventListener('click', async event => {
+  const btn = event.currentTarget
+  // 一次性写操作，逐渠道发：某个渠道挂了不该拦住其它渠道。
+  const providers = Object.keys(model.statuses || {}).filter(id => {
+    const status = model.statuses[id]
+    return id !== 'antigravity'
+      && !RETIRED_CHANNELS.has(id)
+      && (status?.accounts?.total ?? 0) > 0
+      && status?.capabilities?.claim === true
+  })
+  if (!providers.length) {
+    window.alert('当前已接入的渠道里没有支持领取积分的。\n（Raccoon、WorkBuddy、Cline 的后端没有签到接口。）')
+    return
+  }
+  claiming = 'all'
+  btn.disabled = true
+  renderRoster()
+  const lines = []
+  for (const provider of providers) {
+    const label = CHANNELS[provider]?.label || provider
+    try {
+      const reply = await rpc('credits.claimAll', { provider })
+      lines.push(`${label}：${claimText(reply.value || {})}`)
+    } catch (error) {
+      lines.push(`${label}：失败 — ${error.message}`)
+    }
+  }
+  claiming = ''
+  btn.disabled = false
+  try {
+    // 领完必查一次积分与签到态：用户点这个按钮就是想看到数字变了。
+    await load({ cold: true, credits: 'force' })
+  } finally {
+    renderRoster()
+  }
+  window.alert(lines.join('\n\n'))
+})
 
 $('add-account').addEventListener('click', () => {
   switchView('channels')

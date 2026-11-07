@@ -309,6 +309,23 @@ html, body {
 .mini svg { display: block; }
 .mini:disabled { opacity: .45; cursor: default; }
 
+/* 领取：可领时给一点点强调色，已签过就退成灰（但依然可点 —— 领取是幂等的）。 */
+.mini.claim:hover { border-color: var(--accent-edge); color: var(--accent); background: var(--accent-wash); }
+.mini.claim.done { color: var(--jade); border-color: var(--line); }
+.mini.claim.done:hover { color: var(--jade); background: var(--jade-wash); border-color: var(--jade); }
+/* 在途：一圈转着的小弧，说明「正在跟上游说话」，而不是按钮坏了。 */
+.claim-spin {
+  width: 9px; height: 9px; margin-left: 1px;
+  border: 1.4px solid currentColor; border-top-color: transparent;
+  border-radius: 50%;
+  animation: claim-spin .7s linear infinite;
+}
+@keyframes claim-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .claim-spin { animation: none; } }
+
+/* 签到「今日未签」：用待办色，和「读数」「原因」这类说明性灰字区分开。 */
+.note-text.pending { color: var(--amber); }
+
 .switch {
   width: 34px; height: 19px; border-radius: 99px;
   background: var(--line); border: 0; position: relative;

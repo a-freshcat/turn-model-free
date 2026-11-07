@@ -115,6 +115,25 @@ class ConsolePageTests(unittest.IsolatedAsyncioTestCase):
         # 换完必须把令牌从地址栏抹掉：刷新一次就失效，也不该留在截图里。
         self.assertIn("history.replaceState", module)
 
+    async def test_console_keeps_the_checkin_entry(self):
+        """签到/领取入口不能丢。
+
+        重写控制台时整块「每个渠道显示今日签到状态 + 领取按钮」被丢了：
+        `credits.status` / `credits.claimAll` 后端一直是好的，页面上却没有
+        任何入口，用户只能认为功能被删了。这条断言守住「入口存在」，
+        具体行为由 `scripts/test-console-polling.mjs` 真点按钮验证。
+        """
+        module = (await self.client.get("/assets/console.mjs")).text
+        self.assertIn("credits.claimAll", module)
+        self.assertIn("credits.status", module)
+        self.assertIn("canClaim", module)
+        # 能力必须取自网关回的能力表，不能退回前端静态表：
+        # 静态表会把「后端没有签到接口」的渠道也画上一个必然失败的按钮。
+        self.assertIn("capabilities", module)
+        self.assertIn("todayCheckedIn", module)
+        html = (await self.client.get("/")).text
+        self.assertIn('id="claim-all"', html)
+
     async def test_console_keeps_hot_and_cold_reads_apart(self):
         """热数据（本机）与冷数据（账号/积分/模型）必须分开计时。
 
