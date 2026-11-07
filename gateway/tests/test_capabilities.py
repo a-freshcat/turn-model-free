@@ -21,8 +21,8 @@ from config import Settings
 from demo_upstream import transport_for
 from main import app
 from upstream_client import UpstreamClient
-from web_api import (CHANNELS, _PLUGIN_CLAIM, _PLUGIN_CREDIT_STATUS, WebManager,
-                     channel_capabilities)
+from web_api import (CHANNELS, LOCAL_CHANNELS, _PLUGIN_CLAIM, _PLUGIN_CREDIT_STATUS,
+                     WebManager, channel_capabilities)
 from test_gateway import completion
 
 
@@ -65,14 +65,31 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
             caps = row["capabilities"]
             # 没有后台签到引擎：自动签到是插件的调度，不在本机网关里。
             self.assertFalse(caps["checkin"], channel)
-            # 12 家的余额由插件查询（token 在 ~/.dsh/.credentials.yaml），
-            # antigravity 则读本机 OAuth 目录。两侧都有余额能力。
-            self.assertTrue(caps["balances"], channel)
-            self.assertTrue(caps["refresh"], channel)
+            # 余额能力分三类，不能一刀切：
+            #   - 插件渠道（plugin=True）：pack.js 有 credits.balances 分支；
+            #   - antigravity（本机 OAuth）：读 .gateway-auth 的配额目录；
+            #   - gemini_api（本机 API Key）：官方按 RPM/TPM 限流，**没有**可读
+            #     的剩余额度。声明 True 会让页面为它画一条永远「无读数」的进度条，
+            #     那是替上游编造一个它并不提供的数字。
+            if channel == "gemini_api":
+                self.assertFalse(caps["balances"], channel)
+                self.assertEqual(caps["login"], "key", channel)
+                self.assertFalse(caps["plugin"], channel)
+                # 刷新是真的：重拉官方模型目录 + 顺带验密钥。
+                self.assertTrue(caps["refresh"], channel)
+            else:
+                self.assertTrue(caps["balances"], channel)
+                self.assertTrue(caps["refresh"], channel)
             # 领取与签到状态必须以 pack.js 的分支清单为准，不能凭印象声明：
             # 声明了但那边没实现，按钮点下去就是一句「操作失败」。
-            self.assertEqual(caps["claim"], channel in _PLUGIN_CLAIM, channel)
-            self.assertEqual(caps["creditStatus"], channel in _PLUGIN_CREDIT_STATUS, channel)
+            if channel in LOCAL_CHANNELS:
+                self.assertFalse(caps["claim"], channel)
+                self.assertFalse(caps["creditStatus"], channel)
+                self.assertFalse(caps["plugin"], channel)
+            else:
+                self.assertEqual(caps["claim"], channel in _PLUGIN_CLAIM, channel)
+                self.assertEqual(caps["creditStatus"], channel in _PLUGIN_CREDIT_STATUS, channel)
+                self.assertTrue(caps["plugin"], f"{channel} 是插件渠道，必须标成 plugin")
 
     async def test_capabilities_are_consistent_with_the_actual_rpc_behaviour(self):
         """申报为 False 的能力，对应 RPC 必须真的拒绝。"""

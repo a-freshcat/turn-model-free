@@ -25,6 +25,20 @@
       "fail_count": 0,
       "max_concurrency": 1,
       "tencent_prompt_level": 0
+    },
+    {
+      "id": "gemini-key-01",
+      "channel": "gemini_api",
+      "driver": "gemini",
+      "nickname": "Gemini 官方 Key",
+      "models": {
+        "gemini_api/gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini_api/gemini-2.5-pro": "gemini-2.5-pro"
+      },
+      "token_env": "GEMINI_API_KEY",
+      "status": "active",
+      "fail_count": 0,
+      "max_concurrency": 2
     }
   ]
 }

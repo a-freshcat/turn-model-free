@@ -18,9 +18,11 @@ from pathlib import Path
 import pytest
 
 from bridge_client import BridgeError, PackBridge
-from web_api import CHANNELS, RETIRED_CHANNELS
+from web_api import CHANNELS, LOCAL_CHANNELS, RETIRED_CHANNELS
 
-BRIDGED = tuple(c for c in CHANNELS if c != "antigravity")
+# 桥只负责插件渠道。本机渠道（antigravity / gemini_api）的凭据在本进程，
+# 桥当然不认识它们的 id——断言「桥必须列出它们」是错的。
+BRIDGED = tuple(c for c in CHANNELS if c not in LOCAL_CHANNELS)
 
 # 每家登录页应落在的域名。用后缀匹配：厂商会换 CDN，但不会换主域。
 EXPECTED_HOSTS = {
@@ -58,10 +60,16 @@ class BridgeProtocolTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(hello.get("ready"))
             # 桥实际报的是 pack.js 认识的渠道。它认得比我们多：`trae` 与
             # `loomy` 已下线，界面上不再提供入口，但桥仍然会列出它们。
-            # 这里断言「我们保留的渠道一个不少」，而不是要求两边完全相等。
+            # 这里断言「我们保留的插件渠道一个不少」，而不是要求两边完全相等。
             reported = set(hello["channels"])
-            self.assertFalse(set(CHANNELS) - reported,
-                             f"桥缺少渠道: {set(CHANNELS) - reported}")
+            self.assertFalse(set(BRIDGED) - reported,
+                             f"桥缺少渠道: {set(BRIDGED) - reported}")
+            # 本机渠道反过来不该出现在桥的清单里：它一旦出现，就说明有人把
+            # gemini_api 当成插件渠道接进了 pack.js（那边没有这个 id）。
+            # `antigravity` 是例外：pack.js 自己叫它 `gemini`，桥的 CHANNELS 表里
+            # 一直写着这个名字，但它从不经桥登录（test_antigravity_does_not_use_the_bridge
+            # 已经锁住这一点）。
+            self.assertNotIn("gemini_api", reported, "gemini_api 必须留在本机侧")
             self.assertFalse(set(RETIRED_CHANNELS) & set(CHANNELS),
                              "已下线渠道不该出现在 CHANNELS 里")
         finally:
@@ -217,6 +225,21 @@ class WebApiBridgeWiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_import_window_refuses_antigravity(self):
         response = await self.rpc("account.importWindow", {"provider": "antigravity"})
         self.assertEqual(response.status_code, 400)
+
+    async def test_gemini_api_add_button_lands_on_the_import_window(self):
+        """官方 API Key 没有厂商登录页：点「添加账号」必须到得了能填密钥的地方。
+
+        返回一个 `/connect?request=` 窗口，而不是一句「不支持导入」——否则渠道
+        页上那张卡片上的「＋」按钮就是一个死按钮。
+        """
+        created = await self.rpc("account.create", {"provider": "gemini_api"})
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertIn("/connect?request=", created.json()["value"]["loginUrl"])
+        self.assertEqual(self.web.bridged, {}, "gemini_api 是渠道本机渠道，不该写进桥接表")
+
+        window = await self.rpc("account.importWindow", {"provider": "gemini_api"})
+        self.assertEqual(window.status_code, 200, window.text)
+        self.assertIn("/connect?request=", window.json()["value"]["loginUrl"])
 
     async def test_login_dialog_text_matches_what_the_button_actually_does(self):
         """12 家弹窗不能说「填写已有配置」——它们打开的是厂商登录页。"""

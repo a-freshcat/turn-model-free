@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。提供独立桌面客户端与网页端双模式，统一管理账号、查看三个独立配额池用量、选择模型并接入各类 OpenAI 兼容客户端。
 
-**当前版本：v1.3.3** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.4.0** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
 
 
 ## 只用技能，接入现成网关
@@ -30,7 +30,7 @@
 
 ## 安装与启动
 
-下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.3.3.zip` 桌面端与 `turn-model-free-web-v1.3.3.zip` 网页端独立包），或克隆仓库：
+下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.4.0.zip` 桌面端与 `turn-model-free-web-v1.4.0.zip` 网页端独立包），或克隆仓库：
 
 ```powershell
 git clone https://github.com/a-freshcat/turn-model-free.git
@@ -64,6 +64,20 @@ launch-web.cmd --no-browser
 ## 添加账号与模型
 
 **Antigravity**：在渠道卡片点击添加，打开 Google 授权页并完成登录。账号模型以实际返回的目录为准；如果目录暂时查询失败，可在登录成功后刷新。首次尚无项目的账号需先在官方客户端完成初始化。
+
+**Gemini API Key**：在渠道卡片点击「Gemini API Key」的添加按钮，粘贴 [Google AI Studio](https://aistudio.google.com/apikey) 生成的密钥（形如 `AIza…`）。保存时即验证密钥并读取 `/v1beta/models`，自动加入支持 `generateContent` 的官方模型；此后点账号的「刷新」会重新对齐模型目录。
+
+这条链路与 Antigravity 共用同一套 Gemini 协议内核（`contents`/`tools`/`thoughtSignature` 一致），但端点、鉴权头、凭据寿命完全不同：
+
+| | Antigravity | Gemini API Key |
+| --- | --- | --- |
+| 端点 | `daily-cloudcode-pa.googleapis.com/v1internal` | `generativelanguage.googleapis.com/v1beta` |
+| 鉴权 | OAuth `Authorization: Bearer`，需 project | `x-goog-api-key` |
+| 凭据寿命 | 一次性轮换 `refresh_token`，可能失效需重登 | 长期有效，只在被撤销时失效 |
+| 额度 | 三个配额池，可读剩余百分比 | 按 RPM/TPM 滑动窗口，无可读额度 |
+| 签到/积分 | 无 | 无 |
+
+同一个渠道里放多把 Key 就是独立号池：并发按 `max_concurrency` 计，`429` 用 20 秒起步的短退避换下一把钥匙，被撤销的 Key 自动停用。
 
 **DSH 插件渠道**：先运行 DSH 并启用插件网关。页面通过插件管理账号与积分，对话默认转发到 `127.0.0.1:8326`；该端口与本项目管理页的 `8199` 独立。
 

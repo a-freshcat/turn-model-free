@@ -25,7 +25,8 @@ from config import load_settings
 from demo_upstream import transport_for
 from plugin_gateway import PluginGateway, PluginGatewayError
 from upstream_client import PreparedStream, UpstreamClient, encode_event
-from web_api import CHANNELS, WebManager, authorized as web_authorized, failure as web_failure, router as web_router
+from web_api import (CHANNELS, LOCAL_CHANNELS, WebManager, authorized as web_authorized,
+                     failure as web_failure, router as web_router)
 from antigravity_auth import OAuthCallbackRedaction
 from protection import ProtectionBlocked, ProtectionMiddleware, SSEProtectionObserver, observe_error_value
 
@@ -236,11 +237,7 @@ async def quota_page():
 
 @app.get("/connect", include_in_schema=False)
 async def connect_page():
-    """导入窗口：只承载「自有兼容上游」的填表，不再是渠道卡片入口。
-
-    12 家渠道的添加走厂商自己的登录页，从控制台的「渠道接入」发起；
-    把导入表单混进那条流程会出现「点登录却弹出配置表」的矛盾。
-    """
+    """本机导入窗口：兼容上游与 Gemini 官方 API Key；插件渠道另走登录桥。"""
     return FileResponse(ROOT / "web" / "connect.html", headers=dict(NO_STORE))
 
 
@@ -280,11 +277,14 @@ async def models(request: Request):
         return unauthorized
     listed = list(request.app.state.pool.models)
     # 12 家的模型由插件网关提供；连不上时只是这批模型缺席，不影响本机号池。
-    # 过滤掉不在 CHANNELS 白名单内的未支持渠道（如匿名渠道 opencode 等）。
+    # 过滤掉不在 CHANNELS 白名单内的未支持渠道（如匿名渠道 opencode 等），
+    # 以及本机渠道的模型：它们已经由 pool.models 报了，再经插件重复列一次会让
+    # 同一个名字出现两遍，客户端下拉里就分不清哪个是本机哪个是插件。
     try:
         probe_models = await request.app.state.web.plugin.probe()
         listed += [m for m in probe_models
-                   if m not in listed and PluginGateway.provider_of(m) in CHANNELS]
+                   if m not in listed and PluginGateway.provider_of(m) in CHANNELS
+                   and PluginGateway.provider_of(m) not in LOCAL_CHANNELS]
     except PluginGatewayError:
         pass
     return {"object": "list", "data": [
@@ -322,8 +322,11 @@ async def make_chat_response(body: ChatRequest, request: Request):
     if bridge_model:
         # 12 家的模型由插件网关提供（id 形如 `codearts/GLM-5.2`）。本机号池不认识
         # 它们，但插件认识——转发过去即可，不必在这里重实现各家的推理协议。
+        # 本机渠道（antigravity / gemini_api）必须排除：它们的前缀也在 CHANNELS 里，
+        # 只判 `not in CHANNELS` 会把一个「已被停用」的本机模型转发给插件，而插件
+        # 那边没有这个渠道的凭据，只会回一个与真实原因无关的错误。
         provider = PluginGateway.provider_of(body.model)
-        if not provider or provider == "antigravity" or provider not in CHANNELS:
+        if not provider or provider in LOCAL_CHANNELS or provider not in CHANNELS:
             return error_response(404, "The requested model is not configured.", "model_not_found",
                                   "invalid_request_error", "model")
         return await _plugin_chat(body, request)

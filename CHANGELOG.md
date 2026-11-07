@@ -1,5 +1,36 @@
 # 版本变更
 
+## v1.4.0 — 2026-11-08
+
+### 1. Gemini 官方 API Key 独立池（`gemini_api` 渠道 / `driver="gemini"`）
+
+- 新增本机渠道 `gemini_api`：凭据是 Google Generative Language 的官方 API Key（`AIza…`），由本进程直接出站，不经过插件的 channel-pack，也不依赖浏览器登录态。它与插件里的 `gemini`（网页 Cookie 反向代理）是两条完全独立的链路，凭据互不通用。
+- 新增 `gateway/gemini_driver.py`：请求体构造、`functionDeclarations`、`thoughtSignature` 校验、候选帧解析全部复用 `antigravity_driver.py` 的协议内核（Gemini 线格式是同一套），只替换三处 —— 端点 `/v1beta/models/<id>:generateContent`、鉴权头 `x-goog-api-key`、响应无 `{"response": …}` 信封。没有复制一份新的协议实现，也没有把已经稳定的 Antigravity 传输改成双模式。
+- `thoughtSignature` 缓存与 Antigravity 共用同一个实例：签名属于 `functionCall` 本身（名字 + 规范化参数），不绑定凭据。多轮工具调用第二跳不再因为「客户端不回 `extra_content`」而 400。
+
+### 2. 失败分类：只罚请求、不罚账号
+
+- `400` 一律抛 `InvalidRequest`，不进入冷却。详情里只回已知的字段名（`generation_config.max_output_tokens` 这类），上游原文、提示词、密钥都不越过 API 边界。
+- `429` 走 20 秒起步的短退避（`gemini_http_429` 进 `TRANSIENT_FAILURES`），不再用整轮 600 秒冷却锁住一把好钥匙 —— 官方免费档是按分钟令牌桶限流，不是账号坏了。Antigravity 的 `antigravity_http_429` 刻意保持整轮冷却，因为那代表按池计的配额已经耗尽。
+- `401/403` 与 `API_KEY_INVALID` → `reauth=True` → 账号停用调度，页面显示「需重登」，且响应体里不出现密钥。
+- 安全策略整段拦下（`promptFeedback.blockReason`）如实回 `content_filter`，不报「流不完整」让号池换号重打同一段提示词。
+
+### 3. 渠道面与页面
+
+- `web_api.LOCAL_CHANNELS` 集中声明「凭据在本进程」的渠道（`antigravity` + `gemini_api`），替换原先散落的 `!= "antigravity"` 判断 —— 漏改一处就会让本机账号被当成插件账号去调 bridge。
+- `channel_capabilities` 新增 `plugin` / `login` 两个字段，前端据此分流，不再靠渠道 id 硬编码。
+- 号池页为 API Key 账号单独渲染：模型数、按上游限流（无可读额度）、凭据长期有效不续期，不再是三个「未知」配额条；驱动标签写「API Key」。
+- 渠道页新增「Gemini API Key」卡片：点「＋ 添加账号」打开本机导入窗口，只需填 API Key（账号 ID 自动生成，可选接口基址）；保存前验证密钥并自动生成模型映射，不走厂商登录。
+
+### 4. 模型清单按「真能用」过滤，不按接口签名猜
+
+- 官方 `/v1beta/models` 里有 47 个声明支持 `generateContent` 的模型，但实测同一把免费 Key 只有 7～9 个真能对话：旧版本是 `404 no longer available to new users`，pro / image / omni 是免费额度 429，tts / lyria / transcribe 只要非文本输出（400）。按方法签名过滤等于把 38 个必然失败的模型列给用户选。
+- 保存与「刷新」都改走 `usable_models()`：目录 → 按可用概率排序（flash-lite → 新版本 flash → latest → gemma → pro 最后）→ 逐个发一次 8 token 的最小请求实测。非对话族（tts / image / lyria / embedding / transcribe / robotics / computer-use / deep-research）直接不进候选。
+- 探测有 60 秒预算，到点带着已确认可用的模型返回，不让页面空转。
+- `2xx` 之外的结果分开处理：`404` 是「这个模型对你不存在」（抛 `InvalidRequest`，不罚账号 —— 以前它被判成账号故障，直接进 600 秒冷却）；`401/403` 是钥匙作废（停用账号）；`429` 再细分。
+- `429` 拆成两种：**每分钟**超限是暂时限流，模型照常可用；**每天**超限（免费档每模型每天 20 次，`QuotaFailure.quotaId` 含 `PerDay`）则该模型当天报废、十几小时后恢复。后者写进 `disabled_models` 并在页面上标为「今日额度用完」，而不是从列表里悄悄消失 —— 用户需要知道「明天还能用」而不是「这个模型被删了」。
+- 单号探活的模型不再写死 `gemini-2.5-flash`（该 id 已对新用户下线，第一次探活就吃 404），改为按「便宜通用族」的正则匹配账号实际拥有的模型。
+
 ## v1.3.3 — 2026-11-07
 
 ### 1. 彻底消除后台控制台黑框与启动器自检

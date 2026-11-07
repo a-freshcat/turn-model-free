@@ -28,6 +28,9 @@ const POOLS = [
 
 const CHANNELS = {
   antigravity: { label: 'Antigravity', icon: 'antigravity.png', hint: '本机 OAuth 目录 · 三个配额池' },
+  // 本机渠道：官方 Generative Language API Key，凭据与出站都在本进程。
+  // 和插件里的 `gemini`（网页 Cookie 逆向）不是同一条链路，凭据也不通用。
+  gemini_api:  { label: 'Gemini API Key', icon: 'gemini.png', note: '官方', hint: 'Google Generative Language · x-goog-api-key · 无签到、无积分包' },
   codearts:    { label: '华为 CodeArts', icon: 'codearts.png', hint: '华为云 · CodeArts' },
   buddy:       { label: '腾讯 WorkBuddy', icon: 'buddy.png', note: '国内', hint: '腾讯 · copilot.tencent.com（CodeBuddy 同一端点，国内版账号）' },
   workbuddy:   { label: 'WorkBuddy', icon: 'workbuddy.png', note: '国际', hint: '腾讯 · workbuddy.ai（国际版端点，独立账号与积分体系）' },
@@ -341,9 +344,28 @@ function renderRoster() {
     const state = stateOf(account)
     const enabled = account.enabled !== false
     const isLocal = account.driver === 'antigravity'
+    // 官方 API Key：本机直连、没有配额目录。单独一个分支，因为它既不是
+    // 「三个 OAuth 池」也不是「插件积分包」——两者的进度条都对它没有意义。
+    const isApiKey = account.driver === 'gemini'
 
     let pools
-    if (isLocal) {
+    if (isApiKey) {
+      const count = Number.isFinite(account.modelCount) ? account.modelCount : (account.models || []).length
+      pools = [
+        `<div class="pool note-line">
+          <span class="pool-name">模型</span>
+          <span class="note-text">${count} 个可选</span>
+        </div>`,
+        `<div class="pool note-line">
+          <span class="pool-name">配额</span>
+          <span class="note-text muted" title="官方按 RPM/TPM 滑动窗口限流，没有可读的剩余额度或重置时刻">按上游限流 · 无可读额度</span>
+        </div>`,
+        `<div class="pool note-line">
+          <span class="pool-name">凭据</span>
+          <span class="note-text muted" title="API Key 是长期有效凭据；被撤销时上游回 API_KEY_INVALID，无需也无法自动续期">长期有效 · 不续期</span>
+        </div>`,
+      ].join('')
+    } else if (isLocal) {
       // 本机 Antigravity：三个独立配额池，条长 = 池内最低剩余
       pools = POOLS.map(pool => {
         const summary = poolSummary(account.models || [], pool.id)
@@ -425,10 +447,13 @@ function renderRoster() {
     const maxConc = account.max_concurrency ?? 1
     const failCount = account.fail_count ?? 0
     const failNote = failCount > 0 ? `<em>失败 ${failCount}</em>` : ''
-    // 本机账号的模型数从配额行数得出；插件账号用渠道级计数；都没有就写 —
-    const modelCount = isLocal
-      ? (account.models || []).length
-      : (Number.isFinite(account.modelCount) ? account.modelCount : null)
+    // 本机账号的模型数从配额行数得出；插件账号用渠道级计数；密钥账号用后端
+    // 给的 model_count。都没有就写 —（不冒充 0）
+    const modelCount = isApiKey
+      ? (Number.isFinite(account.modelCount) ? account.modelCount : (account.models || []).length)
+      : isLocal
+        ? (account.models || []).length
+        : (Number.isFinite(account.modelCount) ? account.modelCount : null)
     const modelsTitle = modelCount === null ? '模型数未知' : `模型 ${modelCount} 个`
     const modelsAttr = modelCount === null ? '—' : String(modelCount)
     const icon = meta.icon
@@ -436,7 +461,9 @@ function renderRoster() {
       : `<span class="initial">${esc((meta.label || '?').slice(0, 1))}</span>`
     const note = meta.note ? ` <span class="tag">${esc(meta.note)}</span>` : ''
     const channelTag = `<span class="tag channel" title="${esc(meta.hint || '')}">${esc(meta.label)}</span>${note}`
-    const driverTag = isLocal ? 'OAuth' : (account.driver === 'channel-pack' ? '插件' : (account.driver || 'token'))
+    const driverTag = isLocal ? 'OAuth'
+      : isApiKey ? 'API Key'
+      : (account.driver === 'channel-pack' ? '插件' : (account.driver || 'token'))
 
     return `<div class="acct${enabled ? '' : ' off'}" data-id="${esc(account.id)}">
       <div class="acct-id">
@@ -470,7 +497,7 @@ function renderRoster() {
             <path d="M2.5 4h11M2.5 8h11M2.5 12h7"></path>
           </svg>
         </button>
-        <button class="mini" data-act="refresh" title="${isLocal ? '刷新配额' : '刷新令牌'}">
+        <button class="mini" data-act="refresh" title="${isLocal ? '刷新配额' : isApiKey ? '重新读取模型目录（顺带验一次密钥）' : '刷新令牌'}">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
             <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5V5h-2.5"></path>
           </svg>
@@ -949,6 +976,13 @@ async function handleAction(id, act, row) {
         await load({ cold: true, credits: 'skip' })
         const errors = reply?.errors || []
         if (errors.length) window.alert(`部分账号刷新失败：\n${errors.join('\n')}`)
+      } else if (account.driver === 'gemini') {
+        // API Key 没有令牌可续，但刷新有真实内容：重拉官方模型目录，并顺带
+        // 用一次 /v1beta/models 验证密钥还有效。失败时后端会把账号停用。
+        await rpc('account.refresh', { accountId: id })
+        await load({ cold: true, credits: 'skip' })
+        const count = (model.accounts.find(item => item.id === id)?.models || []).length
+        window.alert(`${account.name || id}\n已重新读取官方模型目录，可对话模型 ${count} 个。`)
       } else {
         // 插件账号的令牌续期是插件自己的事，交给 account.refresh。
         // 用户点了「刷新」就是要看这个账号的当前读数，所以这一行的积分强制重查。
@@ -978,7 +1012,7 @@ async function handleAction(id, act, row) {
   }
 
   if (act === 'models') {
-    if (account.driver !== 'antigravity') {
+    if (account.driver !== 'antigravity' && account.driver !== 'gemini') {
       // 插件账号的模型表在插件里；用该渠道的模型清单并标注来源
       const reply = await rpc('model.list', { provider: account.provider }).catch(() => null)
       const names = (reply?.value?.models || []).map(item => item.id).sort()
@@ -1014,6 +1048,18 @@ async function startLogin(provider) {
       if (!url) throw new Error('未返回授权地址')
       window.open(url, '_blank', 'noopener')
       window.alert('已在浏览器打开 Google 授权页。完成授权后回到本页点「刷新」。')
+      return
+    }
+    if (provider === 'gemini_api') {
+      // 官方 API Key 没有可跳转的登录页：Google 不会为一把 Key 发起浏览器授权。
+      // 这里打开的是本机的导入窗口（字段已按 API Key 裁剪），而不是把用户送到
+      // 一个假的「登录」页去困惑。
+      const reply = await rpc('account.importWindow', { provider })
+      const url = reply.value?.loginUrl
+      if (!url) throw new Error('未返回导入窗口地址')
+      window.open(url, '_blank', 'noopener')
+      window.alert('已打开导入窗口。把 Google AI Studio 生成的 API Key 填进去（形如 AIza…），'
+        + '模型名直接写官方的 gemini-2.5-flash 这类 id，保存后回到本页点「刷新」。')
       return
     }
     const reply = await rpc('account.create', { provider })
@@ -1119,12 +1165,16 @@ async function loadInner({ cold, credits }) {
 
     const local = (quotaReply.accounts || []).map(item => {
       const runtime = stateById.get(item.id) || {}
+      // provider/driver 由后端给出，不再写死成 antigravity：号池现在同时有
+      // OAuth 目录账号和官方 API Key 账号，写死会让密钥账号在页面上显示成
+      // 「Antigravity · 三个配额池」，然后三个池全是「未知」。
       return {
         id: item.id,
         name: item.name,
-        provider: 'antigravity',
-        driver: 'antigravity',
+        provider: item.provider || 'antigravity',
+        driver: item.driver || 'antigravity',
         models: item.models || [],
+        modelCount: Number.isFinite(item.model_count) ? item.model_count : null,
         updated_at: item.updated_at,
         error: item.error || '',
         // 状态以运行态为准；运行态缺失时退回配额接口报告的状态
@@ -1145,8 +1195,18 @@ async function loadInner({ cold, credits }) {
       // 账号、令牌、积分都在那边。以前只画 antigravity，号池里有 10 个账号却只
       // 显示 2 个——这正是「号池怎么只看到两个」的原因。
       const statuses = model.statuses
+      // 只去问插件渠道的账号。判据是后端能力表里的 `plugin` 标志，不是
+      // `id !== 'antigravity'`：加一个本机渠道（gemini_api）之后，那条判断会把
+      // 它当成插件渠道去调 bridge，得到一个空列表和一堆「未响应」。
+      //
+      // `plugin === undefined` 是**旧后端**（进程还没重启，跑的是 1.3.3 的
+      // web_api）。静态页面是从磁盘读的，代码已经是新的，接口却还没这个字段：
+      // 那时必须退回旧的判据，否则插件账号整片消失，看起来像「号池被清了」。
+      const asksPlugin = (id, row) => (typeof row?.capabilities?.plugin === 'boolean'
+        ? row.capabilities.plugin
+        : id !== 'antigravity' && id !== 'gemini_api')
       const pluginProviders = Object.keys(statuses).filter(
-        id => id !== 'antigravity'
+        id => asksPlugin(id, statuses[id])
           && !RETIRED_CHANNELS.has(id)
           && (statuses[id]?.accounts?.total ?? 0) > 0,
       )
@@ -1434,8 +1494,10 @@ $('claim-all').addEventListener('click', async event => {
   // 一次性写操作，逐渠道发：某个渠道挂了不该拦住其它渠道。
   const providers = Object.keys(model.statuses || {}).filter(id => {
     const status = model.statuses[id]
-    return id !== 'antigravity'
-      && !RETIRED_CHANNELS.has(id)
+    // 只按后端能力表筛：声明 claim:true 的渠道才有签到实现。以前这里还写了
+    // `id !== 'antigravity'` 兜底，现在能力表已经是准的，硬编码反而会漏掉
+    // 以后新增的、确实支持领取的本机渠道。
+    return !RETIRED_CHANNELS.has(id)
       && (status?.accounts?.total ?? 0) > 0
       && status?.capabilities?.claim === true
   })

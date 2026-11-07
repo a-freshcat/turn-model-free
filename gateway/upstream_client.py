@@ -295,6 +295,16 @@ class UpstreamClient:
                 raise UpstreamFailure("antigravity_auth_not_initialized")
             return await send_native(self.antigravity, self._client(account), account,
                                      messages, stream, model=model, options=options, lifetime=lifetime)
+        if account.driver == "gemini":
+            # 官方 API Key 池：协议内核与 Antigravity 完全一致（contents / tools /
+            # thoughtSignature 都是同一套 Gemini 线格式），差别只有端点与
+            # `x-goog-api-key` 头。签名缓存共用同一个实例 —— 签名属于 functionCall
+            # 本身，不绑定凭据。
+            from gemini_driver import send_gemini
+            signatures = getattr(self.antigravity, "tool_signatures", None)
+            return await send_gemini(signatures, self._client(account), account,
+                                     messages, stream, model=model, options=options,
+                                     lifetime=lifetime)
         client = self._client(account)
         headers = {
             **account.device_headers, "User-Agent": account.user_agent or "local-chat-gateway/1",

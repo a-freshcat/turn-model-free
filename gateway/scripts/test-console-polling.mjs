@@ -183,25 +183,41 @@ function quotaPayload() {
     ok: true,
     api_base: 'http://127.0.0.1:8199/v1',
     api_key: 'test-key-value',
-    accounts: [{
-      id: 'local-a', name: 'local@example.com', status: 'active', updated_at: 1_700_000_000,
-      models: [
-        { id: 'gemini-2-flash', name: 'gemini-2-flash', remaining: 40, pool: 'gemini_shared', reset_at: 1_900_000_000 },
-        { id: 'claude-sonnet', name: 'claude-sonnet', remaining: 70, pool: 'claude_gpt', reset_at: 1_900_100_000 },
-      ],
-    }],
+    accounts: [
+      {
+        id: 'local-a', name: 'local@example.com', status: 'active', updated_at: 1_700_000_000,
+        provider: 'antigravity', driver: 'antigravity',
+        models: [
+          { id: 'gemini-2-flash', name: 'gemini-2-flash', remaining: 40, pool: 'gemini_shared', reset_at: 1_900_000_000 },
+          { id: 'claude-sonnet', name: 'claude-sonnet', remaining: 70, pool: 'claude_gpt', reset_at: 1_900_100_000 },
+        ],
+      },
+      {
+        // 官方 API Key 账号：本机渠道，但没有配额目录可读。后端给 model_count，
+        // 不给百分比。页面必须据此渲染成「无可读额度」，而不是三条「未知」进度条。
+        id: 'gem-key-1', name: 'key@example.com', status: 'active', updated_at: 1_700_000_000,
+        provider: 'gemini_api', driver: 'gemini', models: [], model_count: 2,
+      },
+    ],
   }
 }
 
 function rpcPayload(method, payload) {
   if (method === 'provider.status') {
+    // `plugin` 是后端新增的分流标志。前端不再靠 `id !== 'antigravity'` 判断
+    // 「这个渠道的账号在插件里」——加一个本机渠道（gemini_api）之后那条判断
+    // 就会让它被当成插件渠道去查积分。夹具必须带上这个字段，否则测的不是
+    // 真实契约。
     return { ok: true, value: { statuses: {
       antigravity: { accounts: { total: 1, enabled: 1 }, models: { total: 2, disabled: 0 },
                      capabilities: { claim: false, checkin: false, creditStatus: false,
-                                     balances: true, refresh: true } },
+                                     balances: true, refresh: true, plugin: false, login: 'oauth' } },
+      gemini_api:  { accounts: { total: 1, enabled: 1 }, models: { total: 2, disabled: 0 },
+                     capabilities: { claim: false, checkin: false, creditStatus: false,
+                                     balances: false, refresh: true, plugin: false, login: 'key' } },
       buddy: { accounts: { total: 1, enabled: 1 }, models: { total: 3, disabled: 0 },
                capabilities: { claim: true, checkin: false, creditStatus: true,
-                               balances: true, refresh: true } },
+                               balances: true, refresh: true, plugin: true, login: 'vendor' } },
     } } }
   }
   if (method === 'account.test') {
@@ -430,6 +446,15 @@ ok('支持领取的渠道有领取按钮',
   Boolean(buddyRow?.querySelector('[data-act="claim"]')))
 ok('本机 antigravity 行没有领取按钮（它没有签到接口）',
   !(roster.rows || []).find(row => row.dataset.id === 'local-a')?.querySelector('[data-act="claim"]'))
+
+/* 官方 API Key 行：既不是三个 OAuth 池，也不是插件积分包。 */
+const keyRow = (roster.rows || []).find(row => row.dataset.id === 'gem-key-1')
+ok('API Key 账号在号池里出现', Boolean(keyRow), JSON.stringify((roster.rows || []).map(r => r.dataset.id)))
+ok('API Key 行没有领取按钮', !keyRow?.querySelector('[data-act="claim"]'))
+ok('API Key 行写「无可读额度」而不是三池「未知」',
+  /无可读额度/.test(keyRow?.innerHTML || '') && !/未知/.test(keyRow?.innerHTML || ''),
+  keyRow?.innerHTML || '')
+ok('API Key 行的驱动标签写明 API Key', /API Key/.test(keyRow?.innerHTML || ''), keyRow?.innerHTML || '')
 ok('未签到时那行写明「今日未签」', /今日未签/.test(roster.innerHTML), '')
 ok('页面顶部有一键领取', elementFor('claim-all').listeners.click?.length === 1)
 
@@ -459,6 +484,18 @@ const statusesStub = rpcPayload('provider.status').value.statuses
 check('workbuddy/raccoon 的能力是 false（后端明确没有签到接口）',
   [statusesStub.buddy.capabilities.claim, statusesStub.antigravity.capabilities.claim],
   [true, false])
+check('本机 API Key 渠道的能力表里 balances=false、plugin=false',
+  [statusesStub.gemini_api.capabilities.balances, statusesStub.gemini_api.capabilities.plugin],
+  [false, false])
+
+/* 前端不能写死「哪些渠道的账号在插件里」：加一个本机渠道（gemini_api）之后，
+   那条 `id !== 'antigravity'` 会把本机账号当插件渠道去查积分，得到一个空
+   列表加一堆「未响应」。判据必须来自后端能力表，并且对旧后端有回退。 */
+const sourceText = readFileSync(MODULE, 'utf8')
+ok('分流判据用 capabilities.plugin，不用写死的渠道名',
+  /capabilities\?\.plugin\s*===\s*'boolean'/.test(sourceText), '')
+ok('旧后端（无 plugin 字段）有回退，不会把插件账号整片藏掉',
+  /id !== 'antigravity' && id !== 'gemini_api'/.test(sourceText), '')
 
 // 探活失败：必须显示插件的真实结论，不能退化成「未知原因」。
 // 插件把原因放在 `message`（不是 `error`），只读 `error` 就会丢掉

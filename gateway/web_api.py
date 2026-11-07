@@ -30,9 +30,17 @@ from protection import DispatchProtection, ProtectionBlocked
 router = APIRouter()
 # 已接入的渠道。`trae`（字节）与 `loomy`（讯飞）已下线：插件包里仍认得这两个
 # id，但登录与模型都不再可用，留在这里只会让渠道页出现点不通的条目。
+#
+# `gemini_api` 是本机渠道：Google Generative Language 的官方 API Key，凭据与
+# 出站都在本进程，和插件里的 `gemini`（网页 Cookie 逆向）完全是两回事。它必须
+# 出现在 CHANNELS 里，否则 `/v1/models` 会把它过滤掉、渠道页也没有入口。
 CHANNELS = ("codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
-            "cline", "raccoon", "zcode", "minimax", "antigravity")
+            "cline", "raccoon", "zcode", "minimax", "antigravity", "gemini_api")
 RETIRED_CHANNELS = ("trae", "loomy")
+# 本机持有的渠道（凭据在本进程，不转发给 pack.js）。写成集合而不是散落的
+# `!= "antigravity"` 判断：新增一个本机渠道时，漏改一处就会让它被当成插件渠道
+# 去调 bridge，页面表现为「账号消失了」或「操作失败」。
+LOCAL_CHANNELS = frozenset({"antigravity", "gemini_api"})
 COOKIE = "gateway_ui_session"
 TTL = 8 * 3600
 
@@ -50,17 +58,33 @@ def channel_capabilities(channel: str) -> dict:
     有没有对应分支，而不是取决于本机网关写了多少 Python。下面两张表就是
     pack.js `credits.status` / `credits.claimAll` 的分支清单；改那边要同步改这里，
     否则页面又会渲染出点不动的按钮。
+
+    `plugin` 是给前端的分流标志：True 表示账号、凭据、积分都在插件的
+    channel-pack 里，页面应当按插件行去渲染、并且只对这类渠道调
+    `credits.balances` / `credits.status`。早先前端靠 `id !== 'antigravity'`
+    判断，加一个本机渠道后就会把本机账号当插件渠道去查积分。
     """
     if channel == "antigravity":
         # 只有 antigravity 的配额目录在本机（OAuth 凭据在 .gateway-auth/）。
         return {"claim": False, "checkin": False, "creditStatus": False,
-                "balances": True, "refresh": True}
+                "balances": True, "refresh": True, "plugin": False, "login": "oauth"}
+    if channel == "gemini_api":
+        # 官方 API Key 按 RPM/TPM 限流，没有积分包、没有签到、也没有配额一览接口；
+        # 声明 balances=False，页面就不会为它渲染一行永远「无读数」的进度条。
+        #
+        # refresh=True 是真的：按钮按下会重拉 `/v1beta/models`，既对齐官方模型
+        # 目录，也顺带用一次目录查询验证密钥还有效（被撤销时 400 API_KEY_INVALID，
+        # 账号会被停用）。声明 False 会让页面留一个看着能点、实际什么都不做的按钮。
+        return {"claim": False, "checkin": False, "creditStatus": False,
+                "balances": False, "refresh": True, "plugin": False, "login": "key"}
     return {
         "claim": channel in _PLUGIN_CLAIM,
         "checkin": False,       # 没有后台签到引擎（自动签到是插件的调度，不在本机）
         "creditStatus": channel in _PLUGIN_CREDIT_STATUS,
         "balances": True,       # pack.js 对 12 家都有 credits.balances 分支
         "refresh": True,        # 令牌续期转发给插件的 account.refresh
+        "plugin": True,
+        "login": "vendor",
     }
 
 
@@ -206,6 +230,19 @@ def explain_plugin_probe_failure(value: dict, account_id: str = "", provider: st
         out["message"] = (message.replace("，已逐个换号重试", "")
                           .replace("已逐个换号重试", ""))
     return out
+
+
+def find_account_in(raw: dict, account_id: str) -> dict:
+    """按 id 取本机 accounts.json 里的一条记录；没有就抛一句能读懂的话。
+
+    与 `rpc()` 里的闭包 `find_account` 同义，但带 id 参数，供不在这层作用域里的
+    方法（刷新/停用）复用 —— 闭包版本每次都要重写一遍 `next(...)`，漏掉一次
+    就会把 `AttributeError` 冒到页面上。
+    """
+    entry = next((a for a in raw["accounts"] if a["id"] == account_id), None)
+    if entry is None:
+        raise ValueError("账号已被移除")
+    return entry
 
 
 def live_rate_limits(entry: dict, now_ms: int) -> dict[str, float]:
@@ -423,7 +460,59 @@ class WebManager:
             entry["models"] = models
             entry["disabled_models"] = [m for m in entry.get("disabled_models", []) if m in models]
         await self.commit(update)
-        return value
+
+    async def refresh_gemini_account(self, id_: str):
+        """重新拉官方模型目录，刷新一个 API Key 账号的模型表。
+
+        这一步也是对密钥是否仍有效的真实检验：`/v1beta/models` 在密钥被撤销时
+        回 400 `API_KEY_INVALID`，在上游封禁时回 403。以前「刷新」在 API Key
+        账号上什么都不做，按钮看着成功、密钥其实早就废了。而且它会把**新增**
+        的模型并进来（官方模型名会变），不覆盖用户已有的映射。
+        """
+        account = next((a for a in self.pool.settings.accounts if a.id == id_), None)
+        if account is None:
+            raise ValueError("账号已被移除")
+        secret = account.token
+        key = secret.get_secret_value() if secret is not None else ""
+        if not key:
+            raise ValueError("该账号没有可用的 API Key")
+        from gemini_driver import endpoint_base, usable_models
+        try:
+            # 用号池自己的客户端，不临时新建：一个账号只能有一个出口，
+            # 目录查询与对话必须走同一条代理链路（同 Antigravity 的约束）。
+            client = self.upstream._client(account)
+            catalog, exhausted = await usable_models(client, key, base=endpoint_base(account))
+        except UpstreamFailure as exc:
+            if exc.reauth:
+                # 密钥作废：停用调度并如实告知。不停用的话它会被反复选中、
+                # 每次都失败，把同一渠道其它账号（如果有）挡在后面。
+                await self.commit(lambda raw: find_account_in(raw, id_).update(status="disabled"))
+                raise ValueError("API Key 已失效或被撤销，已停用该账号，请重新添加密钥") from None
+            raise ValueError(f"刷新失败：{exc.reason}") from None
+        models = {f"gemini_api/{name}": name for name in catalog}
+        # 今日额度耗尽的模型单独记：它们今天调不动，但明天能回来，不是「坏模型」。
+        # 页面上按「今日额度用完」呈现，而不是从列表里悄悄消失。
+        spent = {f"gemini_api/{name}": name for name in exhausted}
+        def update(raw):
+            entry = find_account_in(raw, id_)
+            entry["models"] = {**models, **spent}
+            entry["disabled_models"] = sorted(set(spent) - set(models))
+        await self.commit(update)
+        return {"ok": True, "models": len(models), "exhausted": len(spent)}
+
+    @staticmethod
+    def _pick_probe_model(aliases, patterns):
+        """按「便宜的通用模型族」挑一个真实存在的别名，不写死版本号。
+
+        Google 会下线旧模型 id（`no longer available to new users`），把
+        `gemini-2.5-flash` 写进探活路径，等于让每个新账号第一次探活就吃 404。
+        这里用正则匹配账号**实际拥有**的模型，优先 lite、再普通 flash。
+        """
+        for pattern in patterns:
+            for alias in aliases:
+                if re.fullmatch(pattern, alias):
+                    return alias
+        return None
 
     async def rows(self):
         async with self.pool.condition:
@@ -452,6 +541,12 @@ class WebManager:
                     row["model_details"] = value.get("catalog", {})
                 except OAuthFailure:
                     row.update(refreshable=False, authStatus="reauth")
+            elif row["driver"] == "gemini":
+                # 官方 API Key 不会过期，也没有可续期的令牌：能不能用只由上游决定。
+                # 这里不写 `refreshable: True` 骗过页面的「令牌已死」判据，而是
+                # 明确说明「没有令牌这回事」——refreshable 为 None 时页面既不显示
+                # 需重登、也不会把刷新按钮画成可用。
+                row.update(refreshable=None, expiresAt=0, authStatus="api_key")
         return result
 
     async def _delete_from_plugin(self, account_id: str) -> bool:
@@ -463,7 +558,7 @@ class WebManager:
         if not account_id:
             return False
         for provider in CHANNELS:
-            if provider == "antigravity":
+            if provider in LOCAL_CHANNELS:
                 continue
             try:
                 value = await self.bridge.call("account.list", {"provider": provider})
@@ -500,7 +595,7 @@ class WebManager:
         if not account_id:
             return None
         for provider in CHANNELS:
-            if provider == "antigravity":
+            if provider in LOCAL_CHANNELS:
                 continue
             for row in await self._plugin_channel_accounts(provider):
                 if row.get("id") == account_id:
@@ -709,7 +804,7 @@ class WebManager:
             # 而用户在插件里明明已经登录过。
             probed_models: list[str] | None = None
             for channel in CHANNELS:
-                if channel == "antigravity":
+                if channel in LOCAL_CHANNELS:
                     continue
                 plugin_rows = await self.plugin_accounts(channel)
                 if not plugin_rows:
@@ -733,13 +828,13 @@ class WebManager:
             merged = [{k: v for k, v in r.items() if k not in {"models", "disabled_models", "model_details"}}
                       for r in selected]
             # 插件里的账号排在前面：那才是用户刚登录过、期待看到的东西。
-            if provider is not None and provider != "antigravity":
+            if provider is not None and provider not in LOCAL_CHANNELS:
                 seen = {row["id"] for row in merged}
                 merged = [r for r in await self.plugin_accounts(provider) if r["id"] not in seen] + merged
             return {"accounts": merged}
         if method == "model.list":
             models = model_rows(selected)
-            if provider is not None and provider != "antigravity":
+            if provider is not None and provider not in LOCAL_CHANNELS:
                 aliases = {m["id"] for m in models}
                 models = models + [m for m in await self.plugin_models(provider)
                                    if m["id"] not in aliases]
@@ -748,7 +843,7 @@ class WebManager:
             # 签到状态归插件：各家的 `checked_in` 字段形状不同，pack.js 已经
             # 按渠道解析过。没有状态的渠道（qoder 系、raccoon、zcode）由 pack.js
             # 回 `unsupported provider`，这里当「没有可展示的状态」处理，不报错。
-            if provider is None or provider == "antigravity":
+            if provider is None or provider in LOCAL_CHANNELS:
                 return {"accounts": []}
             try:
                 value = await self.bridge.call("credits.status", {"provider": provider})
@@ -756,6 +851,10 @@ class WebManager:
                 return {"accounts": []}
             return value or {"accounts": []}
         if method == "credits.balances":
+            if provider == "gemini_api":
+                # 官方 API Key 没有积分包、没有剩余额度接口（配额按 RPM/TPM 在
+                # 上游滑动窗口里算）。回空表而不是伪造 0：页面据此不画进度条。
+                return {"accounts": [], "windowDays": 0}
             if provider == "antigravity":
                 balances = []
                 for row in selected:
@@ -819,6 +918,9 @@ class WebManager:
             if provider is None or provider == "antigravity":
                 raise ValueError(unsupported(provider, "积分领取",
                                              "本机按 OAuth 目录读取配额，没有签到接口"))
+            if provider == "gemini_api":
+                raise ValueError(unsupported(provider, "积分领取",
+                                             "官方 API Key 按 RPM/TPM 限流，没有签到积分"))
             # 领取/签到同样交给插件：预检、幂等处理、设备指纹轮换都在那边。
             # 没有实现的渠道由 pack.js 自己给出具体原因（例如「后端没有签到
             # 接口」），比网关编一句「尚未接入」准确。
@@ -841,6 +943,17 @@ class WebManager:
                 # antigravity 有自己的 Python OAuth（凭据落在 .gateway-auth/，
                 # 由本进程直接使用），不走桥。
                 return await self.ag.begin(base)
+            if provider == "gemini_api":
+                # 官方 API Key 没有可跳转的登录页（Google 不会为一个 API Key
+                # 发起浏览器授权）。这里返回导入窗口而不是一句「不支持」：
+                # 「添加账号」按钮对每个渠道都存在，点下去必须到得了能填密钥的地方。
+                self.pending = {k: v for k, v in self.pending.items()
+                                if v["expires"] > time.monotonic()}
+                if len(self.pending) >= 32:
+                    raise ValueError("待添加窗口过多，请稍后重试")
+                id_ = secrets.token_urlsafe(24)
+                self.pending[id_] = {"provider": provider, "expires": time.monotonic() + 1800}
+                return {"accountId": id_, "loginUrl": base + "/connect?request=" + id_}
             # 其余 12 家用插件自己的 channel-pack 登录：厂商端点、PKCE、DPoP、
             # 二维码页、轮询节奏都在那边，网关只负责把 URL 交出去。
             try:
@@ -858,6 +971,11 @@ class WebManager:
             # 显式的导入窗口。原先 12 家的 account.create 直接返回这个页面，
             # 现在它们走厂商登录，导入仍要可达——用户手上已有的兼容上游配置
             # 不该因为上游登录能力补齐而失去入口。
+            #
+            # `gemini_api` 走的就是这个窗口：官方 API Key 没有登录页可跳，
+            # 用户手动粘贴密钥才是唯一诚实的入口。antigravity 不行——它的凭据
+            # 必须由本进程的 OAuth 流程生成（PKCE + 本地回调），手填一个
+            # access_token 进来既不能续期也不对 project。
             if provider not in CHANNELS or provider == "antigravity":
                 raise ValueError("该渠道不支持导入")
             self.pending = {k: v for k, v in self.pending.items() if v["expires"] > time.monotonic()}
@@ -936,6 +1054,10 @@ class WebManager:
                 return {"ok": True}
             if target["driver"] == "antigravity":
                 await self.refresh_oauth_account(account_id)
+            elif target["driver"] == "gemini":
+                # API Key 没有令牌可续，但「刷新」仍有真实动作：重新拉官方模型目录，
+                # 把账号可用的模型表对齐上游。密钥被撤销时这里会明确报错并停用。
+                await self.refresh_gemini_account(account_id)
             return {"ok": True}
         if method == "model.clearDead":
             # 页面在 model.dead === true 时把开关渲染成「恢复」。本机网关的模型表
@@ -992,12 +1114,26 @@ class WebManager:
             aliases = [m for m in target["models"] if m not in target["disabled_models"]]
             if not aliases:
                 return {"ok": False, "error": "该账号的模型已全部关闭"}
-            # 优先选用轻量通用的标准探活模型（如 gemini-2.5-flash / flash-lite 等），避免 chat_ 开头的内部补全端点报错
-            probe_model = aliases[0]
-            for cand in ("antigravity/gemini-2.5-flash", "antigravity/gemini-3-flash", "antigravity/gemini-2.5-flash-lite", "antigravity/gemini-3.8-flash-low"):
-                if cand in aliases:
-                    probe_model = cand
-                    break
+            if target["driver"] == "gemini":
+                # 官方 API Key 没有「配额目录」可查，探活就是真发一次最小请求。
+                # 挑模型不能写死版本号：Google 会下线旧模型（`no longer available
+                # to new users`），写死 `gemini-2.5-flash` 等于让每个新用户第一次
+                # 探活就吃 404。按「便宜且通用」的**族**排序，用正则匹配当前账号
+                # 实际拥有的模型。
+                probe_model = self._pick_probe_model(aliases, (
+                    r"^gemini_api/gemini-\d+(?:\.\d+)?-flash-lite$",
+                    r"^gemini_api/gemini-\d+(?:\.\d+)?-flash$",
+                    r"^gemini_api/gemini-flash-lite-latest$",
+                    r"^gemini_api/gemini-flash-latest$",
+                )) or aliases[0]
+            else:
+                # 优先选用轻量通用的标准探活模型（如 gemini-2.5-flash / flash-lite 等），避免 chat_ 开头的内部补全端点报错
+                probe_model = aliases[0]
+                for cand in ("antigravity/gemini-2.5-flash", "antigravity/gemini-3-flash",
+                             "antigravity/gemini-2.5-flash-lite", "antigravity/gemini-3.8-flash-low"):
+                    if cand in aliases:
+                        probe_model = cand
+                        break
             lifetime = AsyncExitStack()
             start = time.monotonic()
             try:
@@ -1082,7 +1218,19 @@ async def quota_snapshot(request: Request):
     api_base = str(request.base_url).rstrip("/") + "/v1"
     result = []
     for row in await manager.rows():
+        if row["driver"] == "gemini":
+            # 官方 API Key 账号必须出现在号池列表里 —— 否则用户在渠道页加完
+            # 密钥，回到号池一个账号都看不到。但没有配额目录可报，所以只给
+            # 模型数，不给百分比：给个 0% 会被读成「额度用完了」。
+            result.append({"id": row["id"], "provider": "gemini_api", "driver": "gemini",
+                           "name": row["nickname"], "status": row["status"],
+                           "models": [], "model_count": len(row["models"]),
+                           "updated_at": 0, "error": ""})
+            continue
         if row["driver"] != "antigravity":
+            # 其他本机驱动没有配额目录。不给它造一行 `models: []` 的空条目：
+            # 页面的「最近重置」「Gemini 池」会把它当成读数缺失的账号，
+            # 看起来像查询失败。
             continue
         try:
             value = await manager.ag.load(row["id"])
@@ -1191,29 +1339,95 @@ async def oauth_callback(request: Request):
 
 @router.get("/ui/import/{request_id}")
 async def import_details(request_id: str, request: Request):
-    if not authorized(request):
-        return guard_rejection(request)
+    """读添加窗口的元信息。
+
+    这个窗口是 `window.open` 出来的独立标签页，它**不能假设自己有会话**：
+    桌面壳的 Cookie 与用户浏览器不共享，窗口被拖到别的浏览器打开时那条
+    `/ui/session` 换来的 Cookie 根本不存在。于是它一进来就被 401 挡住，页面只
+    显示「添加窗口不可用」，用户看到的却是「请先连接本机网关」——他明明刚从
+    控制台点了按钮。
+
+    这里的凭据是 `request_id` 本身：32 字符随机、单次保存即失效、TTL 有限、
+    只对这一个 pending 条目有效。它由本机控制台交给本机页面，不是可以猜的。
+    """
     manager = request.app.state.web
     pending = manager.pending.get(request_id)
-    if pending is None or pending["expires"] <= time.monotonic():
-        return failure("添加窗口已过期", 404)
-    return {"ok": True, "provider": pending["provider"], "demo": manager.demo}
+    if pending is not None and pending["expires"] > time.monotonic():
+        return {"ok": True, "provider": pending["provider"], "demo": manager.demo}
+    if not authorized(request):
+        return guard_rejection(request)
+    return failure("添加窗口已过期", 404)
 
 
 @router.post("/ui/import")
 async def import_account(body: ImportInput, request: Request):
-    if not authorized(request):
-        return guard_rejection(request)
     manager = request.app.state.web
+    pending_now = manager.pending.get(body.request_id)
+    # 与 GET 同理：这次性 request_id 是窗口自身的凭据。但它只对「这个窗口」
+    # 有效——别的路径（账号列表、改配置）仍然要求会话/Bearer，所以这里不是
+    # 把整个 /ui 打开，只是让「粘一把 Key 进来」这一件事成立。
+    #
+    # 仍然要求同源：别的站点替用户 POST 一个它猜不到的 request_id 本来就不可能，
+    # 但多加一道同源检查不花成本，也挡住「本机别的前端」顺手改号池。
+    if pending_now is None and not authorized(request):
+        return guard_rejection(request)
+    if not same_origin(request):
+        return failure("请求来源不是本机页面，已拒绝", 403)
+    draft = copy.deepcopy(body.account)
+    # 驱动按渠道决定，不由页面填写：页面只提交「填了什么」，不提交「走哪个实现」。
+    # gemini_api 的凭据是官方 API Key，必须落到 `driver="gemini"`；写成 openai
+    # 会把它当成一条 OpenAI 兼容上游去 POST，地址和鉴权头全都不对。
+    #
+    # 这些校验必须在**占位窗口还开着**的时候做完再往下走：以前写在锁外、
+    # 又在 `pending["saving"] = True` 之后，抛错就直接变成 500，而且那个窗口
+    # 会永久停在 saving 态（再提交只会得到 409）。
+    if manager.pending.get(body.request_id, {}).get("provider") == "gemini_api":
+        draft["driver"] = "gemini"
+        # 官方端点由驱动按需推导，页面填的空串不能存成 `endpoint: ""`
+        # （校验会把它当成「给了个不是 URL 的东西」）。
+        if not draft.get("endpoint"):
+            draft.pop("endpoint", None)
+        if draft.get("cookie") or draft.get("cookie_env"):
+            return failure("Gemini API Key 渠道不收 Cookie，请改用 token 或 token_env")
+        if not draft.get("token") and not draft.get("token_env"):
+            return failure("Gemini API Key 渠道需要填 API Key")
     async with manager.lock:
         pending = manager.pending.get(body.request_id)
         if pending is None or pending["expires"] <= time.monotonic() or pending.get("saved") or pending.get("saving"):
             return failure("添加窗口已完成或已过期", 409)
         provider = pending["provider"]
+        draft["channel"] = provider
+        if provider != "gemini_api":
+            draft["driver"] = "demo" if manager.demo else "openai"
         pending["saving"] = True
-    account = copy.deepcopy(body.account)
-    account["channel"] = provider
-    account["driver"] = "demo" if manager.demo else "openai"
+    account = draft
+    if provider == "gemini_api":
+        # 密钥保存前先走与号池相同的代理选择规则拉官方模型目录：表单只填 Key，
+        # `models` 来自 Google 当前实际公布的 generateContent 清单。
+        # 目录查失败就保留添加窗口以便重试，不能把猜测的模型写成已可用。
+        from gemini_driver import API_BASE, usable_models
+        from config import Account
+        from upstream_client import _proxy_for
+        import httpx
+        try:
+            probe = Account.model_validate({**account, "models": {"gemini_api/_probe": "gemini-2.5-flash"}})
+            async with httpx.AsyncClient(trust_env=False, follow_redirects=False,
+                                          proxy=_proxy_for(probe),
+                                          timeout=httpx.Timeout(30, connect=8, pool=4, write=20)) as client:
+                catalog, exhausted = await usable_models(client, probe.token.get_secret_value(),
+                                                         base=probe.endpoint or API_BASE)
+            account["models"] = {f"gemini_api/{name}": name
+                                 for name in list(catalog) + list(exhausted)}
+            account["disabled_models"] = sorted(f"gemini_api/{name}" for name in exhausted)
+        except (ValueError, ValidationError, UpstreamFailure, httpx.HTTPError, TimeoutError) as exc:
+            pending.pop("saving", None)
+            if isinstance(exc, UpstreamFailure):
+                detail = "API Key 验证失败" if exc.reauth else f"官方模型目录查询失败：{exc.reason}"
+            elif isinstance(exc, (httpx.HTTPError, TimeoutError)):
+                detail = "官方模型目录连接失败，请检查网络后重试"
+            else:
+                detail = "密钥或接口基址格式有误"
+            return failure(detail)
     def add(raw):
         if any(a["id"] == account.get("id") for a in raw["accounts"]):
             raise ValueError("账号 ID 已存在")
@@ -1230,4 +1444,6 @@ async def import_account(body: ImportInput, request: Request):
         return failure("配置写入失败，请检查文件权限", 500)
     pending["saved"] = account.get("nickname") or account.get("id", "")
     pending.pop("saving", None)
-    return {"ok": True}
+    # 回传识别到的模型数：API Key 模式下模型清单是本机查出来的，用户看不到
+    # 自己填了什么，保存后得给一句「识别到 N 个可用模型」，否则不知道成没成。
+    return {"ok": True, "models": len(account.get("models") or {})}

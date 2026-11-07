@@ -19,10 +19,17 @@ class Account(BaseModel):
     # `trae` 与 `loomy` 已下线（界面上不再提供入口），但仍留在这个 Literal 里：
     # 老用户的 accounts.json 里可能还存着这两个渠道的历史账号记录，删掉枚举值
     # 会让整个号池校验失败、网关起不来。保留 = 旧文件照常能读，只是不再新增。
+    #
+    # `gemini_api` 是**本机**渠道（`driver="gemini"`）：凭据是 Google Generative
+    # Language API 的 API Key，本进程直接出站。它不是插件里的 `gemini`
+    # （那个 id 指的是浏览器 Cookie 逆向的 Antigravity/Gemini 网页端，由
+    # pack_bridge 把 `antigravity` 映射成 `gemini` 后使用）。两个概念必须分开：
+    # 混用会让本机密钥账号被当成插件账号去登网页。
     channel: Literal["codearts", "buddy", "workbuddy", "lobsterai", "qoder", "qodercn",
-                     "trae", "cline", "loomy", "raccoon", "minimax", "zcode", "antigravity"] = "buddy"
+                     "trae", "cline", "loomy", "raccoon", "minimax", "zcode", "antigravity",
+                     "gemini_api"] = "buddy"
     nickname: str = Field(default="", max_length=64)
-    driver: Literal["openai", "demo", "antigravity"] = "openai"
+    driver: Literal["openai", "demo", "antigravity", "gemini"] = "openai"
     credential_id: str | None = Field(default=None, pattern=r"^ag-[a-f0-9]{24}$")
     endpoint: str | None = None
     models: dict[str, str] = Field(default_factory=dict)
@@ -48,6 +55,13 @@ class Account(BaseModel):
     @field_validator("channel", mode="before")
     @classmethod
     def migrate_google_channel(cls, value):
+        """v1.2.0 把本机 OAuth 账号写成 `channel: "gemini"`，现在归一到 `antigravity`。
+
+        这里**不能**把 `gemini` 猜成 `gemini_api`：`channel` 声明在 `driver` 之前，
+        `mode="before"` 校验时 `driver` 还没解析（`info.data` 里没有），猜就必然
+        猜错。新渠道用独立名字 `gemini_api`（见 `driver="gemini"` 的分支），
+        旧文件原样继续读成 Antigravity。
+        """
         return "antigravity" if value == "gemini" else value
 
     @model_validator(mode="after")
@@ -76,6 +90,22 @@ class Account(BaseModel):
             if (self.channel != "antigravity" or not self.credential_id or self.endpoint is not None
                     or any(getattr(self, name) is not None for name in ("token", "cookie", "token_env", "cookie_env"))):
                 raise ValueError("Antigravity requires a local OAuth credential reference")
+        elif self.driver == "gemini":
+            # 官方 API Key 是**长期**凭据，没有刷新令牌、没有 project 探测。
+            # 因此这条路径的失效只有一种：密钥被撤销（401/403 + API_KEY_INVALID）。
+            if (self.channel != "gemini_api" or self.credential_id is not None
+                    or self.cookie is not None or self.cookie_env is not None):
+                raise ValueError("Gemini API Key accounts need channel gemini_api and no cookies")
+            if not self.token and not self.token_env:
+                raise ValueError("Gemini API Key accounts need a token or token_env")
+            # endpoint 只允许本机/自建代理；空表示走官方 generativelanguage 端点。
+            if self.endpoint is not None:
+                url = urlsplit(self.endpoint)
+                local_http = url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
+                if (not (url.scheme == "https" or local_http) or not url.hostname
+                        or url.username is not None or url.password is not None or url.fragment
+                        or any(ord(c) <= 32 or ord(c) == 127 for c in self.endpoint)):
+                    raise ValueError("endpoint must be a full HTTPS base URL")
         elif self.driver == "demo":
             if self.endpoint is not None or self.token is not None or self.cookie is not None:
                 raise ValueError("demo accounts do not accept endpoints or credentials")
