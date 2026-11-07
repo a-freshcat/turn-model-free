@@ -225,9 +225,9 @@ function poolResetAt(poolId) {
 
 function stateOf(account) {
   const status = account.status || 'active'
+  if (status === 'reauth' || account.tokenDead) return { cls: 'err', text: '需重登' }
   if (status === 'active') return { cls: 'ok', text: '正常' }
   if (status === 'disabled') return { cls: 'stop', text: '已暂停' }
-  if (status === 'reauth') return { cls: 'err', text: '需重登' }
   if (status === 'cooldown') {
     const sec = account.cooldown_remaining_seconds || 0
     // 冷却读数是「请求那一刻还剩多久」。10 秒一跳的倒计时把它往下扣，
@@ -879,7 +879,27 @@ async function handleAction(id, act, row) {
     try {
       const reply = await rpc('account.test', { accountId: id })
       const value = reply.value || {}
-      window.alert(value.ok ? `探活成功：${value.ms} ms` : `探活失败：${value.error || '未知原因'}`)
+      if (value.ok) {
+        window.alert(`探活成功：${value.ms ?? '—'} ms`)
+      } else {
+        // 失败原因在后端有多个字段：插件原文放 `message`，桥接异常放 `error`，
+        // 网关认不出类型时还会把上游原文塞进 `raw`。只读 `error` 会让一条
+        // 「令牌已过期，请重新登录」的明确结论显示成「未知原因」——正是这种
+        // 情况最需要看原因。
+        const reason = value.message || value.error || value.raw || '插件没有返回原因'
+        const lines = [`探活失败：${reason}`]
+        // 上游原文与 `message` 不同时补一行，否则排查时只有转述没有证据。
+        if (value.raw && value.raw !== reason) lines.push(`\n上游原文：${value.raw}`)
+        if (value.accountId) lines.push(`\n账号：${value.accountId}`)
+        if (value.modelId) lines.push(`\n探活模型：${value.modelId}`)
+        if (account.driver !== 'antigravity') {
+          lines.push('\n这个按钮只探活当前账号，不会替它测试同渠道其他账号。')
+          if (/所有账号.*凭证.*失效|所有账号.*凭据.*失效/.test(reason)) {
+            lines.push('\n插件原文的「所有账号」是单号探活内部的错误文案，不代表同渠道其它账号也失效。')
+          }
+        }
+        window.alert(lines.join(''))
+      }
     } catch (error) {
       window.alert(`探活请求失败：${error.message}`)
     } finally {
@@ -936,7 +956,21 @@ async function handleAction(id, act, row) {
         await load({ cold: true, credits: 'force' })
       }
     } catch (error) {
-      window.alert(`刷新失败：${error.message}`)
+      const detail = String(error?.message || error || '').replace(/^刷新失败[：:]\s*/, '')
+      if (/STS5\.180[56]|the refresh token has been used|ExpiredRefreshToken|无 refresh_token/i.test(detail)) {
+        // 华为 CodeArts 等渠道的 refresh_token 是一次性轮换令牌；一旦服务端报
+        // STS5.1806（已被消费）且本地仍是旧令牌，这枚令牌就彻底作废、不可能再刷成功。
+        // 继续留在启用态会让插件 getAvailableAccount 每次先选到它并拦住同渠道其它好号。
+        await rpc('account.update', { accountId: id, patch: { enabled: false } }).catch(() => null)
+        await load({ cold: true, credits: 'force' }).catch(() => null)
+        window.alert(
+          `该账号（${account.name || id}）的一次性续期令牌（refresh_token）已在服务端作废，无法继续自动续期，只能重新登录。\n\n`
+          + `服务端返回：${detail}\n\n`
+          + '已自动将该账号停用调度，避免它排在首位拦住同渠道其它正常账号；可点右上角「＋ 添加账号」重新登录，或直接移除该条目。',
+        )
+      } else {
+        window.alert(`刷新失败：${detail}`)
+      }
     } finally {
       btn.disabled = false
     }
@@ -1186,6 +1220,12 @@ async function loadInner({ cold, credits }) {
           const runtime = stateById.get(row.id) || {}
           const cached = previousCredits.get(row.id) || null
           const credit = creditById.get(row.id) || null
+          const balanceError = credit?.error ?? cached?.balanceError ?? ''
+          const expiresAt = Number(row.expiresAt || 0)
+          const refreshable = row.refreshable !== false
+          const tokenDead = (expiresAt > 0 && expiresAt <= Date.now() && !refreshable)
+            || /APIG\.0602|security token has expired|STS5\.180[56]|refresh token has been used|credential expired/i.test(balanceError)
+          const rawStatus = runtime.status || row.status || 'active'
           external.push({
             id: row.id,
             name: (row.nickname || '未命名账号').replace(/\s*·\s*冷却.*$/, ''),
@@ -1193,8 +1233,9 @@ async function loadInner({ cold, credits }) {
             driver: row.driver || 'channel-pack',
             models: null,
             modelCount: Number.isFinite(channelModels) ? channelModels : null,
-            // 插件行自带 status；运行态有则以运行态为准
-            status: runtime.status || row.status || 'active',
+            // 插件行自带 status；凭据已死且不可续期时明确标为 reauth（需重登）
+            status: rawStatus === 'active' && tokenDead ? 'reauth' : rawStatus,
+            tokenDead,
             enabled: runtime.status
               ? runtime.status !== 'disabled'
               : row.enabled !== false,
@@ -1205,7 +1246,7 @@ async function loadInner({ cold, credits }) {
             rate_limited_models: row.rate_limited_models || [],
             // 这一轮没查积分时沿用上次读数，并带上它的时刻（页面会标出来）。
             balance: credit?.balance ?? cached?.balance ?? null,
-            balanceError: credit?.error ?? cached?.balanceError ?? '',
+            balanceError,
             balanceAt: credit ? lastCreditsAt : (cached?.balanceAt ?? 0),
             // 领取能力与今日签到态。同一个渠道的所有账号共享能力。
             canClaim: caps.claim === true,
@@ -1438,7 +1479,7 @@ $('probe-all').addEventListener('click', async event => {
     try {
       const reply = await rpc('account.test', { accountId: account.id })
       const value = reply.value || {}
-      results.push(`${account.name || account.id}: ${value.ok ? `正常 ${value.ms} ms` : `失败 ${value.error || ''}`}`)
+      results.push(`${account.name || account.id}: ${value.ok ? `正常 ${value.ms ?? '—'} ms` : `失败 ${value.message || value.error || value.raw || '插件没有返回原因'}`}`)
     } catch (error) {
       results.push(`${account.name || account.id}: 失败 ${error.message}`)
     }

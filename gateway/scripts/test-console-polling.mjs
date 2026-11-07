@@ -204,6 +204,29 @@ function rpcPayload(method, payload) {
                                balances: true, refresh: true } },
     } } }
   }
+  if (method === 'account.test') {
+    // 复现插件真实的失败形状：原因在 `message`（不是 `error`），
+    // 另带 `raw` 上游原文。前端只读 `error` 时就会显示「未知原因」。
+    return { ok: true, value: {
+      accountId: payload?.accountId || 'buddy-1',
+      nickname: '埃尔温',
+      modelId: 'GLM-5.2',
+      ok: false,
+      message: '无法确认：codearts: 所有账号的凭证均已失效（上游：'
+        + '{"error_msg":"Bad request: the security token has expired",'
+        + '"error_code":"APIG.0602"} ），请在 Channel Pack 重新登录 CodeArts',
+      raw: '{"error_msg":"Bad request: the security token has expired","error_code":"APIG.0602"}',
+    } }
+  }
+  if (method === 'account.refresh') {
+    return {
+      ok: false,
+      error: {
+        message: '刷新失败：CodeArts token request failed: 400 '
+          + '{"error_code":"STS5.1806","error_msg":"invalid refresh token: \'the refresh token has been used\'"}',
+      },
+    }
+  }
   if (method === 'credits.status') {
     // 签到态：第一次读是「今日未签」，领取之后变「今日已签」。
     return { ok: true, value: { accounts: [{
@@ -272,9 +295,11 @@ const documentStub = {
   listeners: {},
 }
 
+// 弹窗内容要能断言：探活失败时那句「未知原因」曾经把真实结论吞掉。
+const alerts = []
 globalThis.window = {
   addEventListener() {},
-  alert() {},
+  alert(message) { alerts.push(String(message)) },
   confirm: () => true,
   open() {},
   pywebview: undefined,
@@ -434,6 +459,42 @@ const statusesStub = rpcPayload('provider.status').value.statuses
 check('workbuddy/raccoon 的能力是 false（后端明确没有签到接口）',
   [statusesStub.buddy.capabilities.claim, statusesStub.antigravity.capabilities.claim],
   [true, false])
+
+// 探活失败：必须显示插件的真实结论，不能退化成「未知原因」。
+// 插件把原因放在 `message`（不是 `error`），只读 `error` 就会丢掉
+// 「令牌已过期，请重新登录」这种最该看到的结论。
+alerts.length = 0
+const testBtn = buddyRow.querySelector('[data-act="test"]')
+await testBtn.listeners.click[0]()
+await new Promise(resolve => setImmediate(resolve))
+ok('探活失败显示真实原因而不是「未知原因」',
+  /security token has expired/.test(alerts.join(' ')), alerts.join(' | '))
+ok('探活失败不再出现「未知原因」占位',
+  !/未知原因/.test(alerts.join(' ')), alerts.join(' | '))
+ok('探活失败带上账号与探活模型便于排查',
+  /账号：buddy-1/.test(alerts.join(' ')) && /探活模型：GLM-5.2/.test(alerts.join(' ')), alerts.join(' | '))
+ok('单号探活明确说明不是整个渠道失效',
+  /只探活当前账号/.test(alerts.join(' ')) && /不代表同渠道其它账号也失效/.test(alerts.join(' ')), alerts.join(' | '))
+
+alerts.length = 0
+const probeAllBtn = elementFor('probe-all')
+await probeAllBtn.listeners.click[0]({ currentTarget: probeAllBtn })
+ok('探活全部也显示插件 message 而不是空失败',
+  /security token has expired/.test(alerts.join(' ')) && !/失败\s*(?:\n|$)/.test(alerts.join(' ')), alerts.join(' | '))
+
+// 令牌刷新撞上 STS5.1806（refresh_token 已被消费）：必须自动停用该死账号并说明需重新登录，
+// 且不能再拼出「刷新失败：刷新失败：」的双重前缀。
+reset()
+alerts.length = 0
+const refreshBtn = buddyRow.querySelector('[data-act="refresh"]')
+await refreshBtn.listeners.click[0]()
+await new Promise(resolve => setImmediate(resolve))
+ok('STS5.1806 刷新失败会自动调用 account.update 停用该死账号',
+  requests.some(item => item.rpc === 'account.update'), JSON.stringify(requests))
+ok('STS5.1806 弹窗说明一次性续期令牌已作废需重新登录',
+  /一次性续期令牌/.test(alerts.join(' ')) && /重新登录/.test(alerts.join(' ')), alerts.join(' | '))
+ok('刷新报错不再出现「刷新失败：刷新失败：」双重前缀',
+  !/刷新失败[：:]\s*刷新失败/.test(alerts.join(' ')), alerts.join(' | '))
 
 console.log('')
 if (failures.length) {
