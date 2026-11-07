@@ -66,7 +66,11 @@ class DispatchProtection:
             if not isinstance(state, dict) or type(state.get('paused')) is not bool:
                 raise ValueError('invalid state')
             self.paused = state['paused']
-            self.reason = state.get('reason') if state.get('reason') in MESSAGES else 'state_unreadable'
+            # 未暂停时 `reason` 本来就该是空串：把它归一成 'state_unreadable' 会让
+            # 页面显示「保护状态文件无法读取」，而文件其实好好的。只有真暂停时
+            # 才需要一个可读原因。
+            self.reason = (state.get('reason') if state.get('reason') in MESSAGES
+                           else 'state_unreadable') if self.paused else ''
             when = state.get('occurred_at')
             self.occurred_at = when if type(when) in (int, float) and math.isfinite(when) else 0
             status = state.get('http_status')
@@ -158,10 +162,23 @@ class DispatchProtection:
                 self.network_failures.append(time.monotonic())
                 self.last_issue_at = time.time()
             return  # Ordinary network faults never latch an account-security pause.
+        # 单个账号的**本机凭据**失效（refresh_token 被 Google 作废、DPAPI 记录读不出、
+        # 项目尚未就绪）是账号级问题，不是「上游在拒绝本网关」。这类失败已经由
+        # `Lease.fail(reauth=True)` 把该账号停用、从调度里摘掉，不可能再被选中，
+        # 因此没有任何理由顺带掐断同渠道其它健康账号与其它渠道。
+        #
+        # 之前的分类把 `antigravity_authorization` 和 401/403 归在一起 pause，
+        # 结果是「一个号过期 → 全部渠道 503」。真实事故：sk0105… 的刷新令牌被
+        # 作废，02:42:21 一次刷新触发全局暂停，健康的另一个 Antigravity 账号和
+        # Gemini API Key 一起停摆。
+        if reason == 'antigravity_authorization':
+            async with self.lock:
+                self.last_issue_at = time.time()
+            return
         # Native drivers namespace HTTP failures; keep the same stop policy.
         if reason.startswith('antigravity_http_'):
             reason = reason.removeprefix('antigravity_')
-        if reason in ('http_401', 'http_403', 'account_restricted', 'antigravity_authorization'):
+        if reason in ('http_401', 'http_403', 'account_restricted'):
             await self.pause('upstream_rejected', int(reason[5:]) if reason.startswith('http_') else None)
         elif reason in ('http_429',):
             await self.pause('rate_limited', 429)

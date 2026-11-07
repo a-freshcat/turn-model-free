@@ -202,7 +202,17 @@ def native_request(messages, options, *, signature_lookup=None, signature_borrow
             batch_has_signature = any(sig is not None for _, _, sig in resolved_calls)
             for call_idx, (func_name, arguments, signature) in enumerate(resolved_calls):
                 part = {"functionCall": {"name": func_name, "args": arguments}}
-                if signature is None and is_open_turn and not batch_has_signature and call_idx == 0:
+                # 缺签名就必须补一个**真实**签名，历史轮也一样。
+                #
+                # 客户端每轮都回放完整历史，但它不会回传 `extra_content`，所以从
+                # 第二问开始，历史里每个 functionCall 都缺 `thoughtSignature`，
+                # 上游直接 400（INVALID_ARGUMENT / thought_signature）。这正是
+                # 「探活成功、真实对话第二句就挂」的原因：探活只发单轮，永远碰
+                # 不到回放历史里的工具调用。
+                #
+                # 仍保持「一个批次只有第一个 call 带签名」的形态，那是 Gemini 原生
+                # 并行调用的结构；同一个批次里其余的 call 由上游按同签名处理。
+                if signature is None and not batch_has_signature and call_idx == 0:
                     if signature_borrow is not None:
                         borrowed = signature_borrow(func_name)
                         if isinstance(borrowed, str) and borrowed:

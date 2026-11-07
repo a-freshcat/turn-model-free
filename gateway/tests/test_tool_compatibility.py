@@ -56,6 +56,43 @@ class ToolCompatibilityTests(unittest.TestCase):
         self.assertEqual(body['contents'][2]['parts'][0]['functionResponse']['response']['result'],
                          'old-result')
 
+    def test_historical_tool_round_gets_a_signature_when_a_follow_up_arrives(self):
+        """历史里的工具轮也必须补签名，否则第二问就 400。
+
+        客户端每轮回放完整历史，但不回传 `extra_content`。所以从第二问开始，
+        历史中每个 functionCall 都缺 `thoughtSignature`，上游直接
+        400（INVALID_ARGUMENT / thought_signature）。探活只发单轮，永远碰不到
+        这条路径——这就是「探测全绿、真实对话第二句就挂」的成因。
+
+        触发条件的关键是「新 user 消息在工具轮之后」：那时工具轮不再是
+        open turn，早先的实现只在 open turn 上补签名，于是这里必然失败。
+        """
+        messages=[
+            {'role': 'user', 'content': 'read a.txt'},
+            {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_1', 'type': 'function',
+                'function': {'name': 'read', 'arguments': '{"path":"a.txt"}'}}]},
+            {'role': 'tool', 'tool_call_id': 'call_1', 'content': 'hello'},
+            # 关键：又来了一个新问题，工具轮因此变成「历史」
+            {'role': 'user', 'content': 'summarize that'},
+        ]
+        body = native_request(messages, {}, signature_borrow=lambda name: 'borrowed-real-signature')
+        call = body['contents'][1]['parts'][0]
+        self.assertEqual(call['thoughtSignature'], 'borrowed-real-signature',
+                         '历史工具轮缺签名会让上游 400')
+
+    def test_a_batch_carrying_a_real_signature_is_left_alone(self):
+        """已经有真签名的批次不该被替换成借来的。"""
+        messages=[
+            {'role': 'user', 'content': 'go'},
+            {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'c1', 'type': 'function',
+                'function': {'name': 'tool', 'arguments': '{}'},
+                'extra_content': {'google': {'thought_signature': 'minted-here'}}}]},
+            {'role': 'tool', 'tool_call_id': 'c1', 'content': 'r'},
+            {'role': 'user', 'content': 'again'},
+        ]
+        body = native_request(messages, {}, signature_borrow=lambda name: 'should-not-be-used')
+        self.assertEqual(body['contents'][1]['parts'][0]['thoughtSignature'], 'minted-here')
+
     def test_signed_history_remains_native_and_arguments_are_not_schema_cleaned(self):
         body=native_request([{'role':'user','content':'test'},
             {'role':'assistant','content':None,'tool_calls':[{'id':'signed','type':'function',

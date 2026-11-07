@@ -44,6 +44,21 @@ class ProtectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state['paused'])
             self.assertEqual(state['http_status'],status)
 
+    async def test_single_account_credential_expiry_does_not_pause_everything(self):
+        """一个账号自己的刷新令牌作废，不是「上游在拒绝本网关」。
+
+        这条失败已经被 `Lease.fail(reauth=True)` 停用该账号，它不会再被选中。
+        以前这里也 pause，于是「一把钥匙过期 → 所有渠道 503」——真实事故：
+        sk0105… 的 refresh_token 被作废，健康的另一个 Antigravity 账号和
+        Gemini API Key 一起停摆 10 分钟以上。
+        """
+        await self.guard.observe_failure('antigravity_authorization')
+        state = await self.guard.snapshot()
+        self.assertFalse(state['paused'], "单账号凭据失效不该全局暂停")
+        # 但账号级的「上游明确拒绝/限制」仍然要停：那可能是整个渠道不可用。
+        await self.guard.observe_failure('account_restricted')
+        self.assertTrue((await self.guard.snapshot())['paused'])
+
     async def test_local_rate_and_concurrency_limits_do_not_reach_upstream(self):
         await self.guard.before_send()
         await self.guard.before_send()

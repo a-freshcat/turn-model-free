@@ -1,5 +1,31 @@
 # 版本变更
 
+## v1.4.1 — 2026-11-08
+
+### 1. 修复「真实对话第二句就 400」（`thought_signature`）
+
+客户端每轮回放完整历史，但不会回传 `extra_content.google.thought_signature`。原来只在「本轮正在进行的工具调用」上补签名：
+
+```python
+if signature is None and is_open_turn and not batch_has_signature and call_idx == 0:
+```
+
+于是一旦工具轮后面又来了新问题（工具轮变成「历史」），历史里每个 `functionCall` 都缺签名，上游直接 `400 INVALID_ARGUMENT / thought_signature`。**探活只发单轮，永远碰不到这条路径**，所以表现为「探测全绿、对话全红」。
+
+现在历史轮同样补真实签名（仍是「一批只有首个 call 带签名」的原生结构）。已带真签名的批次不会被替换。
+
+### 2. 修复「一个账号凭据过期 → 全渠道 503」
+
+单个账号的本机凭据失效（`refresh_token` 被 Google 作废、DPAPI 记录读不出、项目尚未就绪）是**账号级**问题：`Lease.fail(reauth=True)` 已经把它停用并从调度里摘掉，不可能再被选中。但原来 `observe_failure` 把 `antigravity_authorization` 和 401/403 归在一起全局 `pause`，结果一个号过期就掐断所有渠道。
+
+真实事故：`sk0105…@gmail.com` 的刷新令牌被作废，一次刷新触发 `pause('upstream_rejected')`，健康的另一个 Antigravity 账号和 Gemini API Key 一起停摆。
+
+现在 `antigravity_authorization` 只记录、不全局暂停；上游明确拒绝（`http_401/403`、`account_restricted`、`channel_11128`）仍全局暂停——那才可能是整个渠道不可用。
+
+### 3. 未暂停时不再显示「状态文件无法读取」
+
+保护状态文件里 `reason` 为空串（正常态），加载时被归一成 `state_unreadable`，页面因此显示「保护状态文件无法读取」，而文件其实好好的。现在只在真正暂停时才解析原因。
+
 ## v1.4.0 — 2026-11-08
 
 ### 1. Gemini 官方 API Key 独立池（`gemini_api` 渠道 / `driver="gemini"`）

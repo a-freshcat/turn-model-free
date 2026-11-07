@@ -1,6 +1,6 @@
 {
   "name": "turn-model-free",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "type": "module",
   "description": "本机模型账号管理与 OpenAI 兼容 API 网关，提供原创桌面控制台、账号与配额展示，支持桌面和网页两种启动方式；插件渠道基于 dsh-our-free-model。",
