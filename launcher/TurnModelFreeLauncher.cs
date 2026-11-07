@@ -33,6 +33,26 @@ internal static class TurnModelFreeLauncher
     [STAThread]
     private static int Main(string[] args)
     {
+        // 未捕获异常在这个进程里没有别的出口（没有控制台，也没有上层父进程能看见），
+        // 表现就是「双击没反应 / 退出代码 1 但没有任何提示」。这里兜住它，走同一条
+        // 失败通道，至少让用户知道崩在哪一步。
+        AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+        {
+            var error = e.ExceptionObject as Exception;
+            Fail("启动器内部异常：\r\n\r\n" + (error != null ? error.ToString() : "未知错误"));
+        };
+        try
+        {
+            return Run(args);
+        }
+        catch (Exception error)
+        {
+            return Fail("启动器内部异常：\r\n\r\n" + error);
+        }
+    }
+
+    private static int Run(string[] args)
+    {
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         Trace("base=" + baseDir);
         string gatewayDir = FindGatewayDir(baseDir);
@@ -57,6 +77,25 @@ internal static class TurnModelFreeLauncher
         {
             return Fail("没有找到 pythonw.exe。\r\n\r\n" +
                         "装好 Python 后重试，或把解释器路径写进环境变量 TMF_PYTHONW。\r\n" +
+                        "要用命令行看详细输出，请改双击 launch-desktop.cmd。");
+        }
+
+        // 起子进程之前先确认这个解释器能不能加载依赖。
+        // 不能加载时**立刻**退出并说清原因，而不是等它崩溃之后贴一段日志：
+        // 用户看到「退出代码 1 + 20 分钟前的旧日志」时，真正的原因（依赖不在
+        // 这个解释器里）反而被埋掉了。
+        string missing = MissingDependency(pythonw, gatewayDir);
+        Trace("missing=" + (missing ?? "(none)"));
+        if (missing != null)
+        {
+            return Fail("这个 Python 环境缺少本项目的依赖：" + missing + "\r\n\r\n" +
+                        "用的解释器：" + pythonw + "\r\n" +
+                        "它既没有装这些包，这个安装目录下也没有 .vendor。\r\n\r\n" +
+                        "装依赖（在下面这个目录里执行）：\r\n\r\n" +
+                        "  cd \"" + gatewayDir + "\"\r\n" +
+                        "  python -m venv .venv\r\n" +
+                        "  .venv\\Scripts\\python.exe -m pip install -r requirements.txt\r\n\r\n" +
+                        "装完再双击这个 exe 就会优先用 .venv 里的解释器。\r\n" +
                         "要用命令行看详细输出，请改双击 launch-desktop.cmd。");
         }
 
@@ -179,6 +218,71 @@ internal static class TurnModelFreeLauncher
             if (File.Exists(Path.Combine(candidate, "launch_desktop.py"))) return candidate;
         }
         return null;
+    }
+
+    /// <summary>
+    /// 探一下这个解释器能不能加载依赖，缺就返回模块名。
+    ///
+    /// 为什么要多这一步：`launch_desktop.py` 会先看 `ROOT/.vendor/fastapi` 在不在，
+    /// 在就插进 sys.path。所以「能不能跑」不是「venv 里装没装」，而是
+    /// 「venv 或者 .vendor 里有没有」。探测必须模拟同一条路径，否则会对一个
+    /// 明明能跑的安装误报缺依赖 —— 那比不检查更糟。
+    ///
+    /// 探测用 `-c` 直接复现那段 sys.path 逻辑，而不是自己猜。
+    /// </summary>
+    private static string MissingDependency(string pythonw, string gatewayDir)
+    {
+        string gatewayQuoted = gatewayDir.Replace("'", "''");
+        // 复现 launch_desktop.py 顶部的两段：sys.path[0] = 脚本目录，
+        // 以及「.vendor/fastapi 存在就把它插进 sys.path」。
+        // 不能靠 os.getcwd()：`-c` 的工作目录由调用方决定，与脚本位置无关。
+        string probeCode =
+            "import sys,os;" +
+            "root=r'" + gatewayQuoted + "';" +
+            "vendor=os.path.join(root,'.vendor');" +
+            "sys.path.insert(0,root);" +
+            "sys.path.insert(0,vendor) if os.path.isdir(os.path.join(vendor,'fastapi')) else None;" +
+            "import uvicorn,webview";
+        try
+        {
+            var probe = new ProcessStartInfo
+            {
+                FileName = pythonw,
+                Arguments = "-c \"" + probeCode.Replace("\"", "\\\"") + "\"",
+                WorkingDirectory = gatewayDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+            };
+            using (var child = Process.Start(probe))
+            {
+                if (child == null) return null;   // 探不出来就当没问题，让真实启动去报错
+                // 必须先把两个流读干净，否则子进程可能卡在管道写满上。
+                var stdout = child.StandardOutput.ReadToEndAsync();
+                var stderr = child.StandardError.ReadToEndAsync();
+                if (!child.WaitForExit(20000))
+                {
+                    try { child.Kill(); } catch (Exception) { }
+                    return null;
+                }
+                string text = (stderr.Result ?? "") + (stdout.Result ?? "");
+                if (child.ExitCode == 0) return null;
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    text, @"No module named '([^']+)'");
+                if (match.Success) return match.Groups[1].Value;
+                // 报错不是「缺模块」时不要冒充依赖问题，交给真实启动去暴露。
+                Trace("probe stderr: " + text.Replace("\r\n", " / "));
+                return null;
+            }
+        }
+        catch (Exception error)
+        {
+            // 探测本身失败（权限、解释器拒绝执行）不该拦住启动。
+            Trace("probe failed: " + error.Message);
+            return null;
+        }
     }
 
     /// <summary>
