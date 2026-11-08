@@ -120,6 +120,7 @@ class AccountManager:
         self.settings = settings
         self.condition = anyio.Condition()
         self.cursor = 0
+        self.cursors = {}
         now = time.monotonic()
         self.states = [
             _State(a, a.status, a.fail_count,
@@ -163,15 +164,25 @@ class AccountManager:
         async with self.condition:
             while True:
                 eligible = self._eligible(model, excluded)
+                # Argon, Claude/GPT and ordinary Gemini are independent quota pools.
+                # Other drivers use per-channel/model rotation (e.g. official Gemini RPM).
+                first = eligible[0].account if eligible else None
+                if first is not None and first.driver == 'antigravity':
+                    from antigravity_auth import model_pool
+                    group = (first.channel, model_pool(model, first.models[model]))
+                else:
+                    group = (first.channel, first.driver, model) if first else ('unknown', model)
+                start = self.cursors.get(group, self.cursor)
                 available = {
                     s.account.id for s in eligible if s.status == "active"
                     and s.in_flight < s.account.max_concurrency
                 }
                 for offset in range(len(self.states)):
-                    index = (self.cursor + offset) % len(self.states)
+                    index = (start + offset) % len(self.states)
                     state = self.states[index]
                     if state.account.id in available:
                         self.cursor = (index + 1) % len(self.states)
+                        self.cursors[group] = self.cursor
                         state.in_flight += 1
                         lease = Lease(self, state)
                         lifetime.push_async_callback(lease.release)

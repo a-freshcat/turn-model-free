@@ -25,10 +25,11 @@ from config import load_settings
 from demo_upstream import transport_for
 from plugin_gateway import PluginGateway, PluginGatewayError
 from upstream_client import PreparedStream, UpstreamClient, encode_event
-from web_api import (CHANNELS, LOCAL_CHANNELS, WebManager, authorized as web_authorized,
+from web_api import (available_models, CHANNELS, LOCAL_CHANNELS, WebManager, authorized as web_authorized,
                      failure as web_failure, router as web_router)
 from antigravity_auth import OAuthCallbackRedaction
 from protection import ProtectionBlocked, ProtectionMiddleware, SSEProtectionObserver, observe_error_value
+from request_limits import RequestLimitsMiddleware
 
 ROOT = Path(__file__).resolve().parent
 
@@ -191,6 +192,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Local Chat Gateway", lifespan=lifespan)
 app.add_middleware(OAuthCallbackRedaction)
 app.add_middleware(ProtectionMiddleware)
+app.add_middleware(RequestLimitsMiddleware)
 bearer = HTTPBearer(auto_error=False, scheme_name="GatewayBearer")
 app.include_router(web_router)
 from image_gateway import router as image_router
@@ -275,18 +277,7 @@ async def models(request: Request):
     unauthorized = auth_error(request)
     if unauthorized is not None:
         return unauthorized
-    listed = list(request.app.state.pool.models)
-    # 12 家的模型由插件网关提供；连不上时只是这批模型缺席，不影响本机号池。
-    # 过滤掉不在 CHANNELS 白名单内的未支持渠道（如匿名渠道 opencode 等），
-    # 以及本机渠道的模型：它们已经由 pool.models 报了，再经插件重复列一次会让
-    # 同一个名字出现两遍，客户端下拉里就分不清哪个是本机哪个是插件。
-    try:
-        probe_models = await request.app.state.web.plugin.probe()
-        listed += [m for m in probe_models
-                   if m not in listed and PluginGateway.provider_of(m) in CHANNELS
-                   and PluginGateway.provider_of(m) not in LOCAL_CHANNELS]
-    except PluginGatewayError:
-        pass
+    listed = await available_models(request.app.state.pool, request.app.state.web.plugin, refresh=True)
     return {"object": "list", "data": [
         {"id": model, "object": "model", "created": 0, "owned_by": "gateway"}
         for model in listed

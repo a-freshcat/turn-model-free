@@ -145,11 +145,13 @@ def _print_startup_banner(port: int, api_key: str) -> None:
     直接用 `print` 而不经 logging：uvicorn 启动时会重配 logging，之前那条
     状态提示就是这样被吞掉的。`print` 不受那套配置影响。
     """
+    stream = sys.stdout if sys.stdout is not None else sys.__stdout__
+    visible_key = api_key if stream is not None and stream.isatty() else "[已隐藏，请在桌面控制台复制]"
     lines = [
         '',
         f'本机网关地址：http://127.0.0.1:{port}/v1',
         '网关 Key（客户端接入用；/docs 里点 Authorize 也填它）：',
-        api_key,
+        visible_key,
         f'控制台：http://127.0.0.1:{port}/',
         '',
     ]

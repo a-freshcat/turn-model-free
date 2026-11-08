@@ -188,12 +188,12 @@ class HiddenChildProcessTests(unittest.TestCase):
         self.assertIn("return {}", self.bridge)
 
     def test_one_shot_commands_are_also_hidden(self):
-        """netstat / tasklist / taskkill / icacls 在 pythonw 下也会各闪一个黑框。"""
+        """netstat / tasklist / icacls 在 pythonw 下也会各闪一个黑框。"""
         self.assertIn("def _hidden(", self.web)
-        for command in ('"netstat"', '"tasklist"', '"taskkill"', '"icacls"'):
+        for command in ('"netstat"', '"tasklist"', '"icacls"'):
             self.assertIn(command, self.web)
-        self.assertEqual(self.web.count("**_hidden()"), 4,
-                         "四个一次性子进程都要带隐藏标志")
+        self.assertEqual(self.web.count("**_hidden()"), 3,
+                         "三个一次性子进程都要带隐藏标志")
 
 
 class ReleasePackagingTests(unittest.TestCase):

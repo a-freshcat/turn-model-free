@@ -364,6 +364,8 @@ if (hash) {
 check('首轮会读账号清单（account.list 各渠道一次）',
   requests.filter(item => item.rpc === 'account.list').length, 1)
 check('首轮查一次积分', requests.filter(item => item.rpc === 'credits.balances').length, 1)
+check('顶部模型数来自实际目录而非渠道汇总', Number(elementFor('kpi-models').textContent), 1)
+check('侧栏模型数与顶部一致', Number(elementFor('rail-models').textContent), 1)
 
 reset()
 await tick(15_000)

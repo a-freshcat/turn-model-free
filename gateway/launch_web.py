@@ -95,7 +95,7 @@ def _port_owner_info(port: int) -> tuple[str, str]:
     """返回 (pid, process_name)；获取失败返回 ("", "")。"""
     try:
         listing = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
-                                 text=True, timeout=5, **_hidden())
+                                 text=True, encoding="oem" if os.name == "nt" else "utf-8", errors="replace", timeout=5, **_hidden())
     except (OSError, subprocess.SubprocessError):
         return "", ""
     pid = ""
@@ -110,7 +110,7 @@ def _port_owner_info(port: int) -> tuple[str, str]:
         return "", ""
     try:
         probe = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                               capture_output=True, text=True, timeout=5, **_hidden())
+                               capture_output=True, text=True, encoding="oem" if os.name == "nt" else "utf-8", errors="replace", timeout=5, **_hidden())
         name = (probe.stdout or "").strip().split(",")[0].strip('"')
     except (OSError, subprocess.SubprocessError):
         name = ""
@@ -130,7 +130,7 @@ def _port_owner(port: int) -> str:
 
 
 def _hidden(**kwargs) -> dict:
-    """给一次性子进程（netstat/tasklist/taskkill/icacls）加上「不弹窗」。
+    """给一次性子进程（netstat/tasklist/icacls）加上「不弹窗」。
 
     这些命令平时一闪就过，看起来没影响；但它们是在 `pythonw.exe` 下跑的，
     没有控制台可继承，Windows 会给每个命令新开一个控制台窗口闪一下。
@@ -142,33 +142,7 @@ def _hidden(**kwargs) -> dict:
 
 
 def _try_takeover_previous_gateway(port: int) -> bool:
-    """如果端口被上一个未退出的自身网关实例占用，尝试优雅关闭或接管。
-
-    仅当目标端口健康接口明确响应且占用者为 python 进程时执行清理，
-    避免用户重复双击或旧窗口残留时报端口冲突。
-    """
-    if not _check_health(f"http://127.0.0.1:{port}"):
-        return False
-    pid, name = _port_owner_info(port)
-    if not pid:
-        return False
-    if name and "python" not in name.lower():
-        return False
-    print(f"检测到端口 {port} 上存在旧网关实例（PID {pid}），正在自动接管重启...", flush=True)
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
-                           capture_output=True, check=False, timeout=5, **_hidden())
-        else:
-            import signal
-            os.kill(int(pid), signal.SIGTERM)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    for _ in range(30):
-        time.sleep(0.1)
-        if _port_available(port):
-            print(f"已成功释放旧网关，正在启动新实例...\n", flush=True)
-            return True
+    """Occupied ports are never forcibly taken over; let the user close the owner."""
     return False
 
 

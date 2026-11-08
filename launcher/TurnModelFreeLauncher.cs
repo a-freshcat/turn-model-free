@@ -22,6 +22,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 internal static class TurnModelFreeLauncher
@@ -394,7 +395,7 @@ internal static class TurnModelFreeLauncher
         if (string.IsNullOrEmpty(path)) return;
         try
         {
-            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff") + " " + line + "\r\n",
+            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff") + " " + RedactDiagnostics(line) + "\r\n",
                                new UTF8Encoding(false));
         }
         catch (Exception) { }
@@ -408,8 +409,27 @@ internal static class TurnModelFreeLauncher
     /// 而「报错说了什么」恰恰是最该被测试锁住的部分（曾经它只显示一份 20 分钟前
     /// 的旧日志）。
     /// </summary>
+    private static string RedactDiagnostics(string message)
+    {
+        string envKey = Environment.GetEnvironmentVariable("GATEWAY_API_KEY");
+        if (!string.IsNullOrEmpty(envKey)) message = message.Replace(envKey, "[REDACTED]");
+        try
+        {
+            string dir = FindGatewayDir(AppDomain.CurrentDomain.BaseDirectory);
+            string file = dir == null ? null : Path.Combine(dir, ".gateway-api-key");
+            if (file != null && File.Exists(file) && new FileInfo(file).Length <= 512)
+            {
+                string key = File.ReadAllText(file).Trim();
+                if (key.Length > 0) message = message.Replace(key, "[REDACTED]");
+            }
+        }
+        catch (Exception) { }
+        return Regex.Replace(message, @"(?im)((?:gateway\s*key|api[_ ]?key|网关密钥|网关\s*key)\s*[:：]\s*)[^\r\n]+", "$1[REDACTED]");
+    }
+
     private static int Fail(string message)
     {
+        message = RedactDiagnostics(message);
         Trace("FAIL: " + message.Replace("\r\n", " / "));
         string report = Environment.GetEnvironmentVariable("TMF_LAUNCHER_REPORT");
         if (!string.IsNullOrEmpty(report))

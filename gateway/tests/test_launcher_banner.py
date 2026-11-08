@@ -41,7 +41,10 @@ def code_only(text: str) -> str:
 
 class StartupBannerTests(unittest.TestCase):
     def test_banner_prints_key_and_endpoints(self):
-        buffer = io.StringIO()
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+        buffer = TTY()
         with redirect_stdout(buffer):
             _print_startup_banner(8199, "beuIS-test-key-value-for-banner")
         text = buffer.getvalue()

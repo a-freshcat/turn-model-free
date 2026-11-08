@@ -171,7 +171,8 @@ class DispatchProtection:
         # 结果是「一个号过期 → 全部渠道 503」。真实事故：sk0105… 的刷新令牌被
         # 作废，02:42:21 一次刷新触发全局暂停，健康的另一个 Antigravity 账号和
         # Gemini API Key 一起停摆。
-        if reason == 'antigravity_authorization':
+        if reason in ('antigravity_authorization', 'gemini_key_invalid', 'gemini_missing_api_key',
+                      'gemini_http_401', 'gemini_http_403'):
             async with self.lock:
                 self.last_issue_at = time.time()
             return

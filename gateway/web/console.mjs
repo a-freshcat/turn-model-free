@@ -253,16 +253,8 @@ function renderKpi() {
 
   $('kpi-online').innerHTML = `${online}<small>/${accounts.length}</small>`
 
-  // 模型可用 = 所有**有账号的渠道**声明的模型数之和。只看本机 Antigravity 会
-  // 少报（本机 26 个，插件渠道还有 64 个），那会让人以为只有 antigravity 能用。
-  let models = null
-  for (const [id, row] of Object.entries(model.statuses || {})) {
-    if (RETIRED_CHANNELS.has(id)) continue
-    const live = (row?.accounts?.total ?? 0) > 0
-    const count = row?.models?.total
-    if (!live || !Number.isFinite(count)) continue
-    models = (models ?? 0) + count
-  }
+  // 与模型页及 /v1/models 使用同一份去重目录。
+  const models = Array.isArray(model.models) ? model.models.length : null
   $('kpi-models').textContent = models === null ? '—' : models
 
   $('kpi-conc').innerHTML = `${inFlight}<small>/${maxConc}</small>`

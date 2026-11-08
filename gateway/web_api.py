@@ -45,6 +45,28 @@ COOKIE = "gateway_ui_session"
 TTL = 8 * 3600
 
 
+async def available_models(pool, plugin, *, refresh=False):
+    """One catalogue for the API and UI; polling reuses a bounded-age snapshot.
+
+    Plugin failures keep the last good catalogue. No credential or quota probing
+    is done once per browser polling request.
+    """
+    lock = getattr(plugin, '_catalog_lock', None)
+    if lock is None:
+        lock = plugin._catalog_lock = anyio.Lock()
+    async with lock:
+        if refresh or time.monotonic() - getattr(plugin, '_catalog_at', float('-inf')) >= 60:
+            try:
+                plugin._models = list(await plugin.probe())
+            except PluginGatewayError:
+                pass
+            plugin._catalog_at = time.monotonic()
+        remote = getattr(plugin, '_models', None) or []
+        return list(dict.fromkeys([*pool.models, *[
+            model for model in remote if PluginGateway.provider_of(model) in CHANNELS
+            and PluginGateway.provider_of(model) not in LOCAL_CHANNELS]]))
+
+
 def channel_capabilities(channel: str) -> dict:
     """本机网关对该渠道**实际实现**的能力，供页面决定渲染哪些按钮。
 
@@ -370,7 +392,7 @@ class WebManager:
             if name is not None:
                 Path(name).unlink(missing_ok=True)
 
-    async def commit(self, transform, *, activate_real=False):
+    async def commit(self, transform, *, activate_real=False, reset_status_ids=()):
         # Mutations are infrequent. Keep the state lock during the short atomic
         # disk commit so no account can acquire a lease between delete checks.
         with anyio.CancelScope(shield=True):
@@ -409,7 +431,7 @@ class WebManager:
                                        time.monotonic() + settings.cooldown_seconds
                                        if account.status == "cooldown" else 0)
                     else:
-                        if state.account.status != account.status:
+                        if state.account.status != account.status or account.id in reset_status_ids:
                             state.status = account.status
                             state.cooldown_until = time.monotonic() + settings.cooldown_seconds \
                                 if account.status == "cooldown" else 0
@@ -1037,7 +1059,7 @@ class WebManager:
                 await self._update_in_plugin(account_id, patch["enabled"])
                 return {"ok": True}
             await self.commit(lambda raw: find_account(raw).update(
-                status="active" if patch["enabled"] else "disabled"))
+                status="active" if patch["enabled"] else "disabled"), reset_status_ids={account_id})
             return {"ok": True}
         if method == "account.refresh":
             target = next((r for r in rows if r["id"] == account_id), None)
@@ -1204,7 +1226,7 @@ async def state(request: Request):
                          "api_base": str(request.base_url).rstrip("/") + "/v1",
                          "api_key": api_key,
                          "accounts": snapshot,
-                         "models": request.app.state.pool.models, "model_details": model_details},
+                         "models": await available_models(request.app.state.pool, manager.plugin), "model_details": model_details},
                         headers={"Cache-Control": "no-store"})
 
 
