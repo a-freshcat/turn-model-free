@@ -68,7 +68,7 @@
       <!-- 表单承载共用字段；gemini 模式只显示下面那块「一个 Key」的输入。 -->
       <input type="hidden" name="id">
       <input type="hidden" name="models" value="{}">
-      <input type="hidden" name="max_concurrency" value="1">
+      <input type="hidden" name="max_concurrency" value="3">
 
       <div id="gemini-fields" hidden>
         <label class="field">
@@ -130,7 +130,7 @@
 
         <label class="field" style="max-width:200px">
           <span>单账号最大并发</span>
-          <input name="max_concurrency_visible" type="number" min="1" max="32" value="1">
+          <input name="max_concurrency_visible" type="number" min="1" max="32" value="3">
         </label>
 
         <div class="hint">

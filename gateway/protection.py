@@ -52,8 +52,8 @@ def _limit(name, default, ceiling):
 class DispatchProtection:
     def __init__(self, path: Path, *, concurrency=None, per_minute=None):
         self.path = path
-        self.concurrency = concurrency or _limit('GATEWAY_MAX_ACTIVE_CHATS', 2, 32)
-        self.per_minute = per_minute or _limit('GATEWAY_MAX_DISPATCH_PER_MINUTE', 20, 600)
+        self.concurrency = concurrency or _limit('GATEWAY_MAX_ACTIVE_CHATS', 3, 32)
+        self.per_minute = per_minute or _limit('GATEWAY_MAX_DISPATCH_PER_MINUTE', 60, 600)
         self.lock = anyio.Lock()
         self.active = {}
         self.starts, self.failures = deque(), deque()

@@ -102,7 +102,7 @@
         <label class="guard-row">凭据类型<select name="credential_type"><option value="token_env">Token 环境变量</option><option value="token">Bearer Token</option><option value="cookie_env">Cookie 环境变量</option><option value="cookie">Cookie</option><option value="">无凭据</option></select></label>
         <label class="guard-row gateway-note">凭据值 / 环境变量名<input name="credential" type="password" autocomplete="new-password"></label>
       </div>
-      <label class="guard-row">单账号最大并发<input name="max_concurrency" type="number" min="1" max="32" value="1" required></label>
+      <label class="guard-row">单账号最大并发<input name="max_concurrency" type="number" min="1" max="32" value="3" required></label>
       <p id="import-error" class="ofm_balanceerror" role="alert"></p>
       <div class="guard-actions"><button class="ofm_btn primary" type="submit" id="import-submit">保存账号</button><button class="ofm_btn ghost" type="button" id="import-close">关闭窗口</button></div>
     </form>

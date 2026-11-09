@@ -458,14 +458,14 @@ class WebManager:
         account = {
             "id": id_, "channel": "antigravity", "driver": "antigravity",
             "credential_id": id_, "nickname": credential["email"], "models": models,
-            "status": "active", "max_concurrency": 1,
+            "status": "active", "max_concurrency": 3,
         }
         def update(raw):
             existing = next((a for a in raw["accounts"] if a["id"] == id_), None)
             if existing is None:
                 raw["accounts"].append(account)
             else:
-                existing.update(account, max_concurrency=existing.get("max_concurrency", 1),
+                existing.update(account, max_concurrency=existing.get("max_concurrency", 3),
                                 disabled_models=[m for m in existing.get("disabled_models", []) if m in models])
         await self.commit(update, activate_real=True)
 

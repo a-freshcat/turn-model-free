@@ -91,7 +91,7 @@ $('import-form').addEventListener('submit', async event => {
         nickname: String(data.get('gemini_nickname') || '').trim(),
         token: key,
         models: {},
-        max_concurrency: 1,
+        max_concurrency: 3,
         status: 'active',
       }
     } else {
@@ -103,7 +103,7 @@ $('import-form').addEventListener('submit', async event => {
         id: data.get('id_visible'),
         nickname: data.get('nickname'),
         models,
-        max_concurrency: Number(data.get('max_concurrency_visible') || 1),
+        max_concurrency: Number(data.get('max_concurrency_visible') || 3),
         status: 'active',
       }
       if (!info.demo) {

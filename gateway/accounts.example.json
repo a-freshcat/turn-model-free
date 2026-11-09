@@ -13,7 +13,7 @@
       "token_env": "UPSTREAM_PRIMARY_TOKEN",
       "status": "active",
       "fail_count": 0,
-      "max_concurrency": 1
+      "max_concurrency": 3
     },
     {
       "id": "secondary",
@@ -23,7 +23,7 @@
       "cookie_env": "UPSTREAM_SECONDARY_COOKIE",
       "status": "disabled",
       "fail_count": 0,
-      "max_concurrency": 1,
+      "max_concurrency": 3,
       "tencent_prompt_level": 0
     },
     {
@@ -38,7 +38,7 @@
       "token_env": "GEMINI_API_KEY",
       "status": "active",
       "fail_count": 0,
-      "max_concurrency": 2
+      "max_concurrency": 3
     }
   ]
 }

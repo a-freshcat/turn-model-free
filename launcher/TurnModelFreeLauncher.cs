@@ -19,6 +19,7 @@
 //           /out:TurnModelFree.exe launcher\TurnModelFreeLauncher.cs
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -30,6 +31,9 @@ internal static class TurnModelFreeLauncher
     private const int DefaultPort = 8199;
     // CREATE_NO_WINDOW：即使将来换回 python.exe（控制台子系统）也不弹黑框。
     private const int CreateNoWindow = 0x08000000;
+    // 弹窗的硬长度上限。没有控制台时它是唯一的报错通道，但 MessageBox 不是日志
+    // 查看器：超过这个长度用户根本读不完，也容易被系统裁掉一半。
+    private const int MaxDialogChars = 3200;
 
     [STAThread]
     private static int Main(string[] args)
@@ -145,30 +149,38 @@ internal static class TurnModelFreeLauncher
         child.Dispose();
         if (code == 0) return 0;
 
-        var message = new StringBuilder();
-        message.Append("桌面控制台退出，代码 ").Append(code).Append("。\r\n\r\n");
-
         // 解释器根本没加载起来时 stderr 就是全部真相，优先展示它。
         string stderr;
         lock (captured) stderr = captured.ToString().Trim();
+        bool fresh = File.Exists(log) && File.GetLastWriteTimeUtc(log) > logStamp;
+
+        var message = new StringBuilder();
+        message.Append("桌面控制台退出，").Append(ExplainExitCode(code)).Append("。\r\n\r\n");
+
         if (stderr.Length > 0)
         {
             message.Append("子进程输出：\r\n\r\n");
-            message.Append(Trim(stderr, 1400));
+            message.Append(FoldNoise(stderr, 900));
             message.Append("\r\n\r\n");
         }
 
-        bool fresh = File.Exists(log) && File.GetLastWriteTimeUtc(log) > logStamp;
         if (fresh)
         {
-            message.Append("最近的诊断日志（").Append(log).Append("）：\r\n\r\n");
-            message.Append(Tail(log, 1200));
+            // 只有**本次**写进去的日志才有诊断价值：它带着这一次的错误行。
+            message.Append("本次诊断日志（").Append(log).Append("）：\r\n\r\n");
+            message.Append(FoldNoise(Tail(log, 1200), 1200));
             message.Append("\r\n\r\n");
         }
-        else if (stderr.Length == 0)
+        else
         {
-            // 既没有新日志也没有 stderr：最典型就是「pythonw 不是这份安装的」。
-            message.Append("这次启动没有产生新的诊断日志，通常说明 Python 环境不对：\r\n")
+            // ⚠ 这里曾经会把整份历史日志贴进弹窗：一次启动失败之后，用户再启动
+            // 仍旧看到同一段十几行 `INFO 诊断日志已启用 / 打开 http://…`，
+            // 每失败一次弹窗更"长"一点，真正的原因一个字都没有。
+            // 旧日志只可能给出误导，所以只留一行结论 + 该看哪里。
+            message.Append("这次启动没有产生新的诊断日志")
+                   .Append(stderr.Length == 0 ? "，也没有子进程输出" : "")
+                   .Append("——多半是进程在写日志之前就退出了（被结束、解释器不对、或上一次的窗口还占着 ")
+                   .Append(port).Append(" 端口）。\r\n")
                    .Append("实际使用的解释器：").Append(pythonw).Append("\r\n\r\n");
         }
 
@@ -184,6 +196,55 @@ internal static class TurnModelFreeLauncher
         return Fail(message.ToString());
     }
 
+    /// <summary>把 Windows 退出码翻译成用户能动手的方向，而不是一个数字。</summary>
+    private static string ExplainExitCode(int code)
+    {
+        // pythonw 被外部结束（任务管理器、注销、父进程带走的）在 Windows 上
+        // 通常表现为 -1 / 0xFFFFFFFF；直接说「代码 -1」用户只会更糊涂。
+        if (code == -1 || code == unchecked((int)0xFFFFFFFF))
+            return "进程被强制结束（代码 -1）";
+        if (code == 1) return "代码 1，通常是启动时报错";
+        if (code == 2) return "代码 2，通常是参数或文件找不到";
+        if (code == 3) return "代码 3，通常是路径问题";
+        return "代码 " + code;
+    }
+
+    /// <summary>
+    /// 折叠重复行并压到长度上限。
+    ///
+    /// 网关的 INFO 日志每行只有时间戳不同，原文贴出来占满弹窗却零信息量；
+    /// 这里把连续重复的同类行折成 `…（同类行 N 条）`，再截断到 limit。
+    /// </summary>
+    private static string FoldNoise(string text, int limit)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        var kept = new List<string>();
+        string previous = null;
+        int repeats = 0;
+        foreach (string raw in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            string line = raw.TrimEnd();
+            if (line.Length == 0) continue;
+            // 只抹掉行首时间戳再比较：同一句 INFO 的差别只在时间。
+            string shape = Regex.Replace(line, @"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.]\d*\s*", "");
+            if (shape == previous)
+            {
+                repeats++;
+                continue;
+            }
+            if (repeats > 0) kept.Add("…（同类行 " + repeats + " 条重复，已折叠）");
+            repeats = 0;
+            previous = shape;
+            kept.Add(line);
+        }
+        if (repeats > 0) kept.Add("…（同类行 " + repeats + " 条重复，已折叠）");
+
+        string joined = string.Join("\r\n", kept.ToArray());
+        if (joined.Length <= limit) return joined;
+        // 截尾而不是截头：Python traceback 的最后一帧才是真正抛错的地方。
+        return "…" + joined.Substring(joined.Length - limit);
+    }
+
     /// <summary>把 traceback 里最常见的「模块不存在」认出来，好给出可执行的修法。</summary>
     private static bool LooksLikeMissingDependency(string stderr)
     {
@@ -191,12 +252,6 @@ internal static class TurnModelFreeLauncher
         return stderr.IndexOf("ModuleNotFoundError", StringComparison.Ordinal) >= 0
             || stderr.IndexOf("ImportError", StringComparison.Ordinal) >= 0
             || stderr.IndexOf("No module named", StringComparison.Ordinal) >= 0;
-    }
-
-    private static string Trim(string text, int limit)
-    {
-        if (text.Length <= limit) return text;
-        return "…" + text.Substring(text.Length - limit);
     }
 
     /// <summary>
@@ -430,6 +485,10 @@ internal static class TurnModelFreeLauncher
     private static int Fail(string message)
     {
         message = RedactDiagnostics(message);
+        // 硬上限放在失败出口这一层，而不是各调用点：任何一个新加的报错分支都
+        // 不该有能力把弹窗撑到读不完。截尾保留结论与「怎么办」的后半段。
+        if (message.Length > MaxDialogChars)
+            message = "…" + message.Substring(message.Length - MaxDialogChars);
         Trace("FAIL: " + message.Replace("\r\n", " / "));
         string report = Environment.GetEnvironmentVariable("TMF_LAUNCHER_REPORT");
         if (!string.IsNullOrEmpty(report))
