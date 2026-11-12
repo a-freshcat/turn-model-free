@@ -470,10 +470,18 @@ class WebManager:
         await self.commit(update, activate_real=True)
 
     async def refresh_oauth_account(self, id_: str):
+        await self.protection.before_send()
         # 配额目录查询与对话请求共用同一凭据，出口也必须一致。
         account = next((a for a in self.pool.settings.accounts if a.id == id_), None)
-        value = await self.ag.refresh_catalog(id_, proxy=self.ag.resolve_proxy(
-            account.proxy if account else None))
+        try:
+            value = await self.ag.refresh_catalog(id_, proxy=self.ag.resolve_proxy(
+                account.proxy if account else None))
+        except OAuthFailure as exc:
+            if exc.reason in {"antigravity_http_401", "antigravity_http_403",
+                              "antigravity_http_429"}:
+                await self.protection.observe_failure(exc.reason)
+                self.protection.check()
+            raise
         models = {"antigravity/" + name: name for name in value.get("catalog", {})}
         def update(raw):
             entry = next((a for a in raw["accounts"] if a["id"] == id_), None)
@@ -482,6 +490,7 @@ class WebManager:
             entry["models"] = models
             entry["disabled_models"] = [m for m in entry.get("disabled_models", []) if m in models]
         await self.commit(update)
+        return value
 
     async def refresh_gemini_account(self, id_: str):
         """重新拉官方模型目录，刷新一个 API Key 账号的模型表。
@@ -786,6 +795,8 @@ class WebManager:
         return out
 
     async def rpc(self, method, payload, base):
+        if method in {"account.test", "account.refresh"}:
+            self.protection.check()
         provider = payload.get("provider")
         account_id = payload.get("accountId")
         rows = await self.rows()
@@ -1070,6 +1081,7 @@ class WebManager:
                 # 令牌续期是插件自己的事；但「刷新」按钮按下去必须有真实动作，
                 # 否则用户看到的是一句成功的空操作。交给插件的 account.refresh。
                 try:
+                    await self.protection.before_send()
                     await self.bridge.call("account.refresh", {"accountId": account_id}, attempts=1)
                 except BridgeError as exc:
                     raise ValueError(f"刷新失败：{exc}") from None
@@ -1079,6 +1091,7 @@ class WebManager:
             elif target["driver"] == "gemini":
                 # API Key 没有令牌可续，但「刷新」仍有真实动作：重新拉官方模型目录，
                 # 把账号可用的模型表对齐上游。密钥被撤销时这里会明确报错并停用。
+                await self.protection.before_send()
                 await self.refresh_gemini_account(account_id)
             return {"ok": True}
         if method == "model.clearDead":
@@ -1112,6 +1125,7 @@ class WebManager:
                 if provider_of_account is None:
                     raise ValueError("账号不存在")
                 try:
+                    await self.protection.before_send()
                     value = await self.bridge.call(
                         "account.test", {"accountId": account_id}, attempts=1)
                 except BridgeError as exc:

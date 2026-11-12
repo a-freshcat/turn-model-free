@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from account_manager import InvalidRequest, PoolUnavailable, UpstreamFailure
 from antigravity_auth import API_BASE, OAuthFailure
-from antigravity_driver import native_http_error, unwrap
+from antigravity_driver import check_before_credential_refresh, native_http_error, unwrap
 from protection import ProtectionBlocked
 from upstream_client import MAX_ERROR, _body, _json_object, _retry_after
 
@@ -96,6 +96,7 @@ async def generate(upstream, lease, lifetime, body, model):
             lifetime.push_async_callback(response.aclose)
             if response.status_code != 401 or attempt:
                 break
+            await check_before_credential_refresh(response)
             await response.aclose()
             try:
                 credential = await auth.credential(account.credential_id, force=True, proxy=proxy)
@@ -104,7 +105,7 @@ async def generate(upstream, lease, lifetime, body, model):
         if not response.is_success:
             raise native_http_error(response.status_code,
                 await _body(response, MAX_ERROR, prefix=True), _retry_after(response.headers.get('retry-after')))
-        value = unwrap(_json_object(await _body(response, MAX_RESPONSE)))
+        value = unwrap(_json_object(await _body(response, MAX_RESPONSE)), _retry_after(response.headers.get("retry-after")))
     except httpx.HTTPError:
         raise UpstreamFailure('antigravity_transport') from None
     for candidate in value.get('candidates') or []:

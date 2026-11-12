@@ -16,6 +16,42 @@ from antigravity_auth import API_BASE, OAuthFailure
 from gemini_schema import clean_tool_schema
 
 
+def structured_stop(value, retry_after=0, *, allow_expired=False):
+    """Classify only structured upstream errors using fixed diagnostic labels."""
+    if not isinstance(value, dict):
+        return None
+    error = value.get("error")
+    if not isinstance(error, dict):
+        error = value
+    codes = [item.get("code") for item in (value, error, value.get("data"))
+             if isinstance(item, dict)]
+    if any(code in (11140, "11140") for code in codes):
+        return UpstreamFailure("account_restricted", reauth=True, retry_after=retry_after)
+    if any(code in (11128, "11128") for code in codes):
+        return UpstreamFailure("channel_11128", retry_after=retry_after)
+    status = error.get("status")
+    if status == "PERMISSION_DENIED" or any(code in (403, "403") for code in codes):
+        return UpstreamFailure("antigravity_http_403", retry_after=retry_after)
+    if status == "RESOURCE_EXHAUSTED" or any(code in (429, "429") for code in codes):
+        return UpstreamFailure("antigravity_http_429", retry_after=retry_after)
+    if not allow_expired and (status == "UNAUTHENTICATED" or
+                              any(code in (401, "401") for code in codes)):
+        return UpstreamFailure("antigravity_http_401", reauth=True, retry_after=retry_after)
+    return None
+
+
+async def check_before_credential_refresh(response):
+    """Do not refresh or resend when the first 401 contains an explicit stop."""
+    from upstream_client import MAX_ERROR, _body, _is_gate_body, _json_object, _retry_after
+    raw = await _body(response, MAX_ERROR, prefix=True)
+    retry_after = _retry_after(response.headers.get("retry-after"))
+    failure = structured_stop(_json_object(raw), retry_after, allow_expired=True)
+    if failure is not None:
+        raise failure
+    if _is_gate_body(raw.decode("utf-8", "replace")):
+        raise UpstreamFailure("channel_11128", retry_after=retry_after)
+
+
 def native_http_error(status, raw, retry_after=0):
     """Do not convert caller/schema validation into an unhealthy account.
 
@@ -25,16 +61,13 @@ def native_http_error(status, raw, retry_after=0):
     from upstream_client import _is_gate_body, _json_object
     value=_json_object(raw) or {}
     error=value.get('error') if isinstance(value.get('error'),dict) else value
-    codes=[item.get('code') for item in (value,error,value.get('data')) if isinstance(item,dict)]
-    if any(code in (11140,'11140') for code in codes):
-        return UpstreamFailure('account_restricted',reauth=True,retry_after=retry_after)
+    failure = structured_stop(value, retry_after)
+    if failure is not None:
+        return failure
     if _is_gate_body(raw.decode('utf-8','replace')):
-        return UpstreamFailure('channel_11128',retry_after=retry_after)
-    if status==400:
-        upstream_status=error.get('status')
-        if upstream_status in ('PERMISSION_DENIED','UNAUTHENTICATED','RESOURCE_EXHAUSTED'):
-            mapped={'PERMISSION_DENIED':403,'UNAUTHENTICATED':401,'RESOURCE_EXHAUSTED':429}[upstream_status]
-            return UpstreamFailure('antigravity_http_'+str(mapped),retry_after=retry_after,reauth=mapped==401)
+        return UpstreamFailure('channel_11128', retry_after=retry_after)
+    if status == 400:
+        upstream_status = error.get('status')
         allowed={'request','generation_config','generationConfig','max_output_tokens','maxOutputTokens',
             'contents','parts','role','text','tools','functionDeclarations','function_declarations',
             'parameters','properties','required','type','thinking_config','thinkingConfig',
@@ -273,12 +306,20 @@ def native_request(messages, options, *, signature_lookup=None, signature_borrow
     return request
 
 
-def unwrap(value):
+def unwrap(value, retry_after=0):
     if not isinstance(value, dict):
         raise UpstreamFailure("antigravity_invalid_response")
-    if value.get("error") is not None:
-        raise UpstreamFailure("antigravity_error_body")
+    for envelope in (value, value.get("response")):
+        if not isinstance(envelope, dict):
+            continue
+        if envelope.get("error") is not None or "candidates" not in envelope:
+            failure = structured_stop(envelope, retry_after)
+            if failure is not None:
+                raise failure
+        if envelope.get("error") is not None:
+            raise UpstreamFailure("antigravity_error_body")
     return value["response"] if isinstance(value.get("response"), dict) else value
+
 
 
 def usage(value):
@@ -385,18 +426,19 @@ async def send_native(auth, client, account, messages, stream, *, model, options
             lifetime.push_async_callback(response.aclose)
             if response.status_code != 401 or attempt:
                 break
+            await check_before_credential_refresh(response)
             await response.aclose()
             try:
                 credential = await auth.credential(account.credential_id, force=True, proxy=proxy)
             except OAuthFailure as exc:
                 raise UpstreamFailure(exc.reason, reauth=exc.reauth, retry_after=exc.retry_after) from None
+        retry = _retry_after(response.headers.get("retry-after"))
         if not response.is_success:
-            retry = _retry_after(response.headers.get("retry-after"))
             raw=await _body(response,MAX_ERROR,prefix=True)
             raise native_http_error(response.status_code,raw,retry)
         meta = {"id": "chatcmpl-" + uuid4().hex, "created": int(time.time()), "model": model}
         if not stream:
-            value = unwrap(_json_object(await _body(response, MAX_JSON)))
+            value = unwrap(_json_object(await _body(response, MAX_JSON)), retry)
             choices = []
             for candidate in value.get("candidates") or []:
                 delta = candidate_delta(candidate)
@@ -420,10 +462,13 @@ async def send_native(auth, client, account, messages, stream, *, model, options
             try:
                 async for event, data in _events(response):
                     if event == "error":
+                        error_value = _json_object(data)
+                        if error_value is not None:
+                            unwrap(error_value, retry)
                         raise UpstreamFailure("antigravity_stream_error")
                     if data.strip() == "[DONE]":
                         break
-                    value = unwrap(_json_object(data))
+                    value = unwrap(_json_object(data), retry)
                     final_usage = usage(value) or final_usage
                     for candidate in value.get("candidates") or []:
                         index = candidate.get("index", 0)
