@@ -2,7 +2,7 @@
 
 本机模型账号管理与 OpenAI 兼容 API 网关。提供独立桌面客户端与网页端双模式，统一管理账号、查看三个独立配额池用量、选择模型并接入各类 OpenAI 兼容客户端。
 
-**当前版本：v1.5.0** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
+**当前版本：v1.5.1** · [下载最新版本](https://github.com/a-freshcat/turn-model-free/releases/latest) · [更新记录](CHANGELOG.md)
 
 
 ## 只用技能，接入现成网关
@@ -30,7 +30,7 @@
 
 ## 安装与启动
 
-下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.5.0.zip` 桌面端与 `turn-model-free-web-v1.5.0.zip` 网页端独立包），或克隆仓库：
+下载并解压 [Release](https://github.com/a-freshcat/turn-model-free/releases/latest)（提供 `turn-model-free-desktop-v1.5.1.zip` 桌面端与 `turn-model-free-web-v1.5.1.zip` 网页端独立包），或克隆仓库：
 
 ```powershell
 git clone https://github.com/a-freshcat/turn-model-free.git

@@ -37,12 +37,28 @@ class ProtectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(DispatchProtection(self.path).paused)
 
     async def test_native_http_status_prefix_uses_the_same_immediate_stop_policy(self):
-        for status in (401,403,429):
+        """401/403 立刻暂停；429 不暂停（它是瞬态的，见下一条用例的说明）。"""
+        for status in (401, 403):
             await self.guard.resume()
             await self.guard.observe_failure(f'antigravity_http_{status}')
-            state=await self.guard.snapshot()
+            state = await self.guard.snapshot()
             self.assertTrue(state['paused'])
-            self.assertEqual(state['http_status'],status)
+            self.assertEqual(state['http_status'], status)
+
+    async def test_rate_limit_does_not_pause_the_whole_gateway(self):
+        """429 是瞬态失败，只该让账号退避，不该停掉整个网关。
+
+        v1.5.1 起 `antigravity_http_429` / `gemini_http_429` 归入瞬态：撞一次
+        限流就把所有渠道暂停，把一个「等一下就好」的状态放大成「服务挂了」。
+        账号级冷却由号池负责，这一层只管「上游在拒绝本网关」这类账号安全问题。
+        """
+        for reason in ('antigravity_http_429', 'gemini_http_429'):
+            await self.guard.resume()
+            await self.guard.observe_failure(reason)
+            state = await self.guard.snapshot()
+            self.assertFalse(state['paused'], f'{reason} must not pause the gateway')
+            # 但仍要计入瞬态计数，供诊断页显示。
+            self.assertGreaterEqual(state['recent_network_failure_count'], 1)
 
     async def test_single_account_credential_expiry_does_not_pause_everything(self):
         """一个账号自己的刷新令牌作废，不是「上游在拒绝本网关」。

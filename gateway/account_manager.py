@@ -33,10 +33,24 @@ class InvalidRequest(Exception):
 
 class PoolUnavailable(Exception):
     def __init__(self, *, retry_after: int | None = None, budget_exhausted: bool = False,
-                 failure_reason: str | None = None):
+                 failure_reason: str | None = None, cooling_reason: str | None = None):
         self.retry_after = retry_after
         self.budget_exhausted = budget_exhausted
+        # 「本次请求自己失败的原因」。只有真的打过上游才可能有值。
         self.failure_reason = failure_reason
+        # 「账号正在冷却的原因」。本轮一次上游都没打，靠它区分
+        # 「正在为限流退避」和「账号被停用」——否则两者都被报成 503。
+        self.cooling_reason = cooling_reason
+
+    @property
+    def rate_limited(self) -> bool:
+        """真正需要客户端等待的限流状态，无论原因是本轮还是上一轮留下的。"""
+        return any(reason in _RATE_LIMIT_REASONS
+                   for reason in (self.failure_reason, self.cooling_reason))
+
+
+# HTTP 429 的各种落地名：native 驱动带 `antigravity_` 前缀，旧适配器不带。
+_RATE_LIMIT_REASONS = frozenset({"antigravity_http_429", "gemini_http_429"})
 
 
 @dataclass
@@ -104,6 +118,19 @@ class Lease:
                 self.released = True
                 self.state.in_flight -= 1
                 self.pool.condition.notify_all()
+
+
+def _cooling_reason(states: list[_State]) -> str | None:
+    """把「正在冷却」归因成一个可路由的原因。
+
+    优先返回限流原因：如果这批冷却的账号里有任何一个是因为 429 退避，
+    客户端唯一有意义的动作就是等，而不是把整个渠道判死。
+    """
+    reasons = [state.last_failure_reason for state in states if state.last_failure_reason]
+    for reason in reasons:
+        if reason in _RATE_LIMIT_REASONS:
+            return reason
+    return reasons[0] if reasons else None
 
 
 def jitter_before_request(account: Account) -> Awaitable[None]:
@@ -190,17 +217,37 @@ class AccountManager:
 
                 remaining = deadline - time.monotonic()
                 busy = any(s.status == "active" for s in eligible)
-                if not busy or remaining <= 0:
+                # 全部账号都在冷却时，`busy` 是 False —— 原实现让这个分支立刻
+                # 抛出，`pool_wait_seconds` 的预算一次都没被用过。实测：
+                # pool_wait_seconds 取 1 / 10 / 30，全都在 0.00s 内失败。
+                #
+                # 代价落在客户端：pi-ai 从不设置 `providerRetryAfterMs`（整份
+                # dsh-llm-pi-ai 里零次赋值），所以 dsh-llm-retry 只能用本地退避
+                # 0.5+1+2+4+8 = 15.5s，而 429 的冷却窗默认 20s。15.5 < 20，五次
+                # 重试全落在冷却里，一个本该「等一下就好」的状态变成整回合失败。
+                #
+                # 所以冷却期**必须**消耗预算去等：等到冷却结束就正常服务，等不到
+                # 才报错。这与「忙」的等待不同 —— 冷却到期时刻是已知的。
+                cooling_left = [s.cooldown_until - time.monotonic() for s in eligible
+                                if s.status == "cooldown"]
+                if remaining <= 0 or not (busy or cooling_left):
                     # 冷却时间可计算；槽位释放时间不可预测。
-                    cooling = [s.cooldown_until for s in self._eligible(model, set())
-                               if s.status == "cooldown"]
+                    cooling_states = [s for s in self._eligible(model, set())
+                                      if s.status == "cooldown"]
+                    cooling = [s.cooldown_until for s in cooling_states]
                     active = any(s.status == "active" for s in self._eligible(model, set()))
                     retry = max(1, math.ceil(min(cooling) - time.monotonic())) if cooling and not active else None
-                    raise PoolUnavailable(retry_after=retry)
-                # 忙时等待一次释放，且不会错过等待期间刚好到期的冷却。
-                cooling = [s.cooldown_until - time.monotonic() for s in eligible
-                           if s.status == "cooldown"]
-                with anyio.move_on_after(min(remaining, *cooling) if cooling else remaining):
+                    # 带出冷却原因：账号因 429 退避时，这是一个「请稍后再试」而不是
+                    # 「池里没有可用账号」。少这一个字段，调用方只能看到
+                    # failure_reason=None，于是把限流报成 503。
+                    raise PoolUnavailable(
+                        retry_after=retry,
+                        cooling_reason=_cooling_reason(cooling_states))
+                # 忙时等一次释放；冷却中等它到期 —— 两者都不超过剩余预算。
+                waits = [w for w in cooling_left if w > 0]
+                if busy:
+                    waits.append(remaining)
+                with anyio.move_on_after(min(remaining, *waits) if waits else remaining):
                     await self.condition.wait()
 
     async def failover(
@@ -249,8 +296,10 @@ class AccountManager:
             if any(s.status == "active" for s in remaining):
                 raise PoolUnavailable(budget_exhausted=True,
                                       failure_reason=last_failure.reason if last_failure else None)
-            cooling = [s.cooldown_until for s in self._eligible(model, set())
-                       if s.status == "cooldown"]
+            cooling_states = [s for s in self._eligible(model, set())
+                              if s.status == "cooldown"]
+            cooling = [s.cooldown_until for s in cooling_states]
             retry = max(1, math.ceil(min(cooling) - time.monotonic())) if cooling else None
             raise PoolUnavailable(retry_after=retry,
-                                  failure_reason=last_failure.reason if last_failure else None)
+                                  failure_reason=last_failure.reason if last_failure else None,
+                                  cooling_reason=_cooling_reason(cooling_states))

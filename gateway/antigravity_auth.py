@@ -7,6 +7,7 @@ Google PKCE/state rules follow the official installed-app OAuth specification.
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -127,6 +128,149 @@ class OAuthFailure(Exception):
         self.retry_after = retry_after
 
 
+# 鉴权/配额 RPC 的端点名白名单。URL 里可能有 project / account 片段，所以**不记
+# 原始 path**，只记一个固定标签。
+_AUTH_RPC_LABELS = (
+    ("loadcodeassist", "loadCodeAssist"),
+    ("retrieveuserquotasummary", "retrieveUserQuotaSummary"),
+    ("fetchavailablemodels", "fetchAvailableModels"),
+    ("oauth2", "oauth2_token"),
+    ("userinfo", "userinfo"),
+    ("onboarduser", "onboardUser"),
+)
+
+
+def _auth_rpc_label(url: str) -> str:
+    lowered = str(url).lower()
+    for needle, label in _AUTH_RPC_LABELS:
+        if needle in lowered:
+            return label
+    return "other"
+
+
+def _capture_auth_rate_limit(status, body: bytes, headers, url) -> None:
+    """把鉴权/配额 RPC 的 429 写进同一份脱敏证据文件。
+
+    只补观测，不改变控制流：调用方仍会照原样抛 `OAuthFailure`。
+
+    为什么要做：生成请求的 429 有完整证据，鉴权 RPC 的 429 却完全没有。
+    于是「两个账号 3 秒内一起 429、配额桶却健康」这个现象，既无法归因到
+    生成请求限流（形状/密度/输出量都已实测排除），也无法检查是不是鉴权 RPC
+    在限流 —— 证据从一开始就没被采集。
+
+    刻意**自包含**，不调用 `antigravity_driver._resource_limit_record`：
+    两个模块的版本会各自漂移（本机启动目录与开发仓库就不是同一版本），
+    依赖对端内部函数会让这里的捕获在没有该函数时静默失效 —— 诊断代码
+    静默失效比没有诊断更糟，因为它看起来在工作。
+    """
+    try:
+        error = _auth_error_object(body)
+        record = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "source": "auth_rpc",
+            "rpc": _auth_rpc_label(url),
+            "http_status": status,
+            # 与生成请求记录同形，事后只需要一个解析器。这里的窗口是**进程内**
+            # 上游发送计数（含生成请求），对鉴权 RPC 而言是背景信息而非自身速率。
+            "rate_window": _auth_rate_window(),
+            "error_keys": sorted(error) if isinstance(error, dict) else [],
+            "error_code": error.get("code") if error.get("code") in (429, "429") else None,
+            "error_status": error.get("status") if isinstance(error.get("status"), str) else None,
+            "message_len": len(error["message"]) if isinstance(error.get("message"), str) else None,
+            "message_labels": _auth_message_labels(error.get("message")),
+            "rpc_types": [],
+            "detail_keys": [],
+            "reason": "unknown",
+            "reason_values_seen": [],
+            "reason_filtered": False,
+            "domains": [],
+            "retry_delay_seconds": [],
+            "quota_ids": [],
+            "retry_after_header": _auth_retry_after(headers),
+            "request_id_fingerprints": _auth_request_ids(headers),
+        }
+        path = Path(__file__).resolve().parent / ".gateway-rate-limit.jsonl"
+        if path.exists() and path.stat().st_size > 256 * 1024:
+            path.replace(path.with_suffix(".jsonl.1"))
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        logging.getLogger(__name__).warning(
+            "Antigravity auth RPC rate limit: rpc=%s http_status=%s upstream_status=%s",
+            record["rpc"], status, record.get("error_status") or "unknown")
+    except Exception:  # noqa: BLE001
+        # 与生成请求的捕获同样的不变式：诊断永不破坏请求路径。
+        try:
+            logging.getLogger(__name__).debug("auth rate-limit capture skipped", exc_info=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _auth_error_object(body: bytes) -> dict:
+    """Extract the error object; malformed bodies degrade to an empty dict."""
+    try:
+        value = json.loads(body) if body else None
+    except (ValueError, RecursionError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    inner = value.get("error")
+    return inner if isinstance(inner, dict) else value
+
+
+def _auth_rate_window() -> dict:
+    """进程内上游发送计数，与生成请求记录同形。
+
+    取不到就返回空值而不是省略键：证据文件的**结构**要保持一致，
+    否则事后按字段读取的脚本会在不同来源之间遇到缺键。
+    """
+    try:
+        import antigravity_driver as drv
+        return drv.rate_window_snapshot()
+    except Exception:  # noqa: BLE001
+        return {"last_60s": None, "last_300s": None, "last_900s": None}
+
+
+def _auth_message_labels(message) -> list[str]:
+    """Whitelisted phrases only — the raw sentence never lands on disk."""
+    labels = (
+        ("resource has been exhausted", "resource_exhausted"),
+        ("quota", "quota"),
+        ("rate limit", "rate_limit"),
+        ("exceeded", "exceeded"),
+        ("permission", "permission"),
+        ("unsupported location", "unsupported_location"),
+        ("not available in your location", "unsupported_location"),
+        ("temporarily", "temporarily"),
+        ("try again", "try_again"),
+    )
+    if not isinstance(message, str) or len(message) > 4096:
+        return []
+    lowered = message.lower()
+    return [label for needle, label in labels if needle in lowered]
+
+
+def _auth_retry_after(headers) -> float:
+    try:
+        from upstream_client import _retry_after
+        return _retry_after(headers.get("retry-after")) if headers is not None else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _auth_request_ids(headers) -> list[str]:
+    """Opaque upstream ids are hashed, never stored raw."""
+    found = []
+    if headers is None:
+        return found
+    for key in ("x-goog-request-id", "x-request-id", "x-cloud-trace-context"):
+        value = headers.get(key)
+        if isinstance(value, str) and value:
+            head = value.split("/", 1)[0]
+            if re.fullmatch(r"[!-~]{1,256}", head):
+                found.append(hashlib.sha256(head.encode("ascii")).hexdigest()[:16])
+    return found
+
+
 class OAuthCallbackRedaction:
     """Remove OAuth query secrets before Uvicorn produces its access log."""
 
@@ -211,8 +355,20 @@ class AntigravityAuth:
                     body.extend(chunk)
                 try:
                     if response.status_code in (408,429,500,502,503,504):
+                        reason = 'antigravity_http_'+str(response.status_code)
+                        # 鉴权/配额 RPC 的 429 此前完全不留证据：直接抛 OAuthFailure，
+                        # 既不写日志也不落 `.gateway-rate-limit.jsonl`。于是「某个 429
+                        # 其实来自 loadCodeAssist / retrieveUserQuota 而不是生成请求」
+                        # 这条最可能的解释，永远无法证实也无法排除 —— 两个账号会在
+                        # 3 秒内先后 429 而配额桶健康，正是这种形状。
+                        #
+                        # 这里只补证据，不改变控制流：同一个 OAuthFailure 照旧抛出。
+                        # 记录函数自带脱敏（只写固定枚举、数值、键名，不写正文/令牌）。
+                        if response.status_code == 429:
+                            _capture_auth_rate_limit(response.status_code, body,
+                                                     response.headers, url)
                         raise OAuthFailure('Google 暂时无法处理请求（HTTP '+str(response.status_code)+'）',
-                                           reason='antigravity_http_'+str(response.status_code),
+                                           reason=reason,
                                            retry_after=_retry_after(response.headers.get('retry-after')))
                     value = json.loads(body)
                 except (ValueError, RecursionError):

@@ -1,5 +1,45 @@
 # 版本变更
 
+## v1.5.1 — 2026-11-13
+
+### Antigravity 持续 429 的根因：system prompt 里的一个 em dash
+
+**现象**：Antigravity 渠道持续返回 `429 RESOURCE_EXHAUSTED`，跨两个账号、跨模型（`gemini-3.8-flash-high` 与 `gemini-4-argon-medium`）都复现。所有配额桶读数健康（0.96 / 0.99），客户端重试 5 次全部失败，换账号无效。
+
+**根因**：上游对 system prompt 中出现的一个 **em dash（`—`，U+2014）** 返回 `429`，而配额根本没有被消耗。这是一个**与速率无关的拒绝**，只是借用了 `RESOURCE_EXHAUSTED` 这个错误码。
+
+定位方式是二分，且**必须直连驱动、绕开号池**——通过网关探测时，第一个 429 就把账号锁进冷却，之后每次探测都是 `source=local_cooldown`（网关自己在挡，上游根本没被请求），看起来「什么都触发」，实际什么都没测到。
+
+| 发送内容 | 长度 | 结果 |
+|---|---|---|
+| system prompt 前 3 行 | 43 字符 | 200 |
+| 前 4 行（第 4 行含 `—`） | 81 字符 | 429 |
+| 第 4 行单独 | 37 字符 | **429**（3/3 稳定） |
+| 第 4 行，`—` 换成 `-` | 37 字符 | 200（3/3） |
+| 第 4 行嵌进 40 行 | 3002 字符 | 429 |
+| 完整 prompt | 31765 字符 | 429 |
+
+**修复**：新增 `normalize_outbound_text`，在三个出站站点把**语义等价的排版字符**归一化为 ASCII：
+
+- `systemInstruction` 文本（每轮重发，命中即每轮失败）
+- 消息文本（字符串与 text block 两种形态）
+- 工具声明的 `description`
+
+映射只涉及 em/en dash、minus、弯引号、不间断空格、零宽字符。**CJK、重音字符、emoji 原样保留；工具名作为标识符不改写。** 这不是绕过内容检测——破折号换成减号语义完全相同，属于编码归一化。
+
+**连带修复**：
+
+- `antigravity_http_429` 之前不在 `TRANSIENT_FAILURES` 里，一次 429 会把账号锁 **600 秒**。现在收录，改用 `network_cooldown_seconds` 起步的短退避。这个改动的动机当时记错成「速率窗口」，实际成因是内容匹配；短退避对真正的成因无效，但**内容匹配不该让账号停摆十分钟**，快速失败更诚实。`failure_policy.py` 的注释已改正，把当时错判的推理一并记下。
+- 冷却期内的新请求此前被报成 `503 account_pool_unavailable`。`PoolUnavailable` 新增 `cooling_reason` 与 `rate_limited`，区分「本轮自己撞到 429」和「账号还在上一轮的冷却里」，两种情况都回 `429 + Retry-After`。
+- 新增 `X-Rate-Limit-Source` 响应头（`upstream` / `local_cooldown`）。在它之前这两种情况的响应完全一样，是本次排查跑偏八轮的直接原因。
+- 鉴权/配额 RPC（`loadCodeAssist` / `retrieveUserQuotaSummary`）的 429 此前不写日志也不落证据，现在记录到同一份脱敏证据文件（`source=auth_rpc`，只记固定枚举与哈希）。
+- `acquire` 在全部账号冷却时立刻抛错，`pool_wait_seconds` 从未被使用过（实测 1/10/30 三个预算都是 0.00 秒失败）。现在会消耗预算等待冷却到期。
+- 新增 `min_interval_ms`（默认 0 关闭）：为「按请求密度限流」加的，但实测 30 次间隔 0.5 秒的请求全部 200，该阈值不存在，故默认关闭，避免白付延迟并与重试叠加。
+
+**验证**：新增 4 个测试文件共 40 项（`test_text_normalization` 15、`test_pool_wait` 10、`test_cooling_surface` 8、`test_auth_capture` 7）。全量 `245 passed / 17 failed`，17 项均为本次改动前既有的基线失败。端到端通过运行中的网关复验：同一份 37 字符文本修前 `429 source=upstream`，修后 `200`。
+
+**排查教训**：`429` 不等于限流。当配额健康、`last_60s` 只有 1、`details` 为空时，应先怀疑请求内容而非速率。诊断时用 `X-Rate-Limit-Source` 区分来源，并**直连驱动**做二分，不要通过号池。
+
 ## v1.5.0 — 2026-11-09
 
 ### 华为 CodeArts 与渠道探活修复、并发上限提升、启动器弹窗收敛

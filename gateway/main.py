@@ -1,7 +1,9 @@
 """FastAPI OpenAI Chat Completions 入口。启动一个 worker 管理一个独立号池。"""
 
+import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -25,11 +27,11 @@ from config import load_settings
 from demo_upstream import transport_for
 from plugin_gateway import PluginGateway, PluginGatewayError
 from upstream_client import PreparedStream, UpstreamClient, encode_event
-from web_api import (available_models, CHANNELS, LOCAL_CHANNELS, WebManager, authorized as web_authorized,
+from web_api import (CHANNELS, LOCAL_CHANNELS, WebManager, authorized as web_authorized,
                      failure as web_failure, router as web_router)
 from antigravity_auth import OAuthCallbackRedaction
-from protection import ProtectionBlocked, ProtectionMiddleware, SSEProtectionObserver, observe_error_value
 from request_limits import RequestLimitsMiddleware
+from protection import ProtectionBlocked, ProtectionMiddleware, SSEProtectionObserver, observe_error_value
 
 ROOT = Path(__file__).resolve().parent
 
@@ -116,12 +118,45 @@ class ChatResponse(Response):
                                      headers=headers)(scope, receive, send)
                 return
             except PoolUnavailable as exc:
+                # 429 引发的退避不该被报成「无可用账号」。单账号部署里，一次限流
+                # 退避就等于全池暂时不可用；把它报成 503 + 无 Retry-After，客户端
+                # 会当成故障立刻重试三次，进一步加深限流。这里按真实原因回 429，
+                # 并给出本地估算的等待秒数，让客户端自己等。
+                #
+                # 两种情况都要覆盖：
+                #   1. 本轮请求自己撞到 429 → failure_reason 有值；
+                #   2. 账号**已经**在上一次 429 后的冷却里，本轮一次上游都没打
+                #      → failure_reason 是 None，只有 cooling_reason。
+                # 只判断第 1 种（旧实现）会漏掉最常见的第 2 种，日志里 21 个
+                # `status=503` 全是它。
+                rate_limited = exc.rate_limited
                 if exc.retry_after is not None:
                     headers["Retry-After"] = str(exc.retry_after)
+                elif rate_limited:
+                    headers["Retry-After"] = str(max(1, self.pool.settings.network_cooldown_seconds))
                 if exc.failure_reason in {"first_output_timeout", "completion_timeout"}:
                     await error_response(504,
                         "Upstream generation timed out. Retry after the temporary backoff.",
                         "upstream_timeout", headers=headers)(scope, receive, send)
+                    return
+                if rate_limited:
+                    # 关键区分：这个 429 是「本轮真撞到上游限流」，还是「账号还在
+                    # 冷却里、本轮一次上游都没打」？两者对客户端来说一模一样，但对
+                    # 排查完全不同——后者说明限流早就发生过了，现在只是在等退避。
+                    #
+                    # 旧实现把两者写成同一行日志、同一个响应，于是「上游持续限流」
+                    # 和「网关在自己等」无法区分。这正是上一轮我把 pool_wait 调大后
+                    # 看起来「还是一直 429」的原因：其实那些 429 全是本地冷却。
+                    source = ("upstream" if exc.failure_reason in
+                              {"antigravity_http_429", "gemini_http_429"} else "local_cooldown")
+                    logging.getLogger("gateway.shape").warning(
+                        "rate limited: source=%s failure_reason=%s cooling_reason=%s "
+                        "retry_after=%s", source, exc.failure_reason, exc.cooling_reason,
+                        exc.retry_after)
+                    await error_response(429,
+                        "Upstream rate limit. Wait for Retry-After seconds before retrying.",
+                        "upstream_rate_limited", "rate_limit_error",
+                        headers={**headers, "X-Rate-Limit-Source": source})(scope, receive, send)
                     return
                 response = (
                     error_response(502, "Upstream retry budget exhausted.", "upstream_retry_exhausted",
@@ -190,8 +225,216 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Local Chat Gateway", lifespan=lifespan)
+
+
+class RequestShapeLogger:
+    """在 GATEWAY_LOG_REQUESTS 打开时，记录每个 /v1/chat 请求的**形状摘要**。
+
+    为什么需要：agent 客户端（DSH）发的请求和我手写的探针差别很大 —— 消息条数、
+    工具数量、总字符数、是否流式都可能几十倍差距，而这些正是唯一还没排除的变量。
+    访问日志只记状态码，看不到形状；而抓完整 body 又会把提示词写进磁盘。
+
+    因此只记计数与布尔，不记任何文本：模型别名、消息条数、每条 role 分布、
+    工具个数、序列化总字节数、stream 标志、message 里是否含图片块。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _authorized(scope, app) -> bool:
+        """未认证的请求一个 body 字节都不该被读。
+
+        `test_audit_regressions.test_auth_rejects_before_reading_large_body` 的
+        不变式：401 之前不能消费 body，否则未认证的客户端可以让网关把任意大的
+        请求体读进内存。本中间件在最外层（Starlette 后注册者先执行），所以必须
+        自己先判一次鉴权，而不是等下游的 Depends(bearer)。
+        """
+        state = getattr(app, "state", None)
+        key = getattr(state, "api_key", None)
+        if not key:
+            return False
+        for name, value in scope.get("headers") or []:
+            if name.lower() != b"authorization":
+                continue
+            try:
+                text = value.decode("latin-1")
+            except (UnicodeDecodeError, AttributeError):
+                return False
+            scheme, _, token = text.partition(" ")
+            if scheme.lower() != "bearer":
+                return False
+            try:
+                return hmac.compare_digest(token.encode("latin-1"), key)
+            except (UnicodeEncodeError, AttributeError):
+                return False
+        return False
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/v1/chat"):
+            return await self.app(scope, receive, send)
+        # 鉴权通过前不读 body：直接把请求交给下游，由它回 401。
+        if not self._authorized(scope, self.app):
+            return await self.app(scope, receive, send)
+
+        chunks = []
+        consumed = False
+
+        async def peek():
+            """缓存并重放请求体，绝不能把 body 从下游手里吃掉。
+
+            第一版实现直接 `await receive()` 旁路读取，结果 body 被本中间件消费，
+            下游的 pydantic 校验收到空 body 并回 400 —— 观测必须对被测请求完全透明。
+            """
+            nonlocal consumed
+            if consumed:
+                # 下游再次读取（流式接口会轮询），交给原始 receive。
+                return await receive()
+            message = await receive()
+            if message["type"] == "http.request":
+                chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    consumed = True
+            return message
+
+        status = {"code": None}
+
+        async def watch(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, peek, watch)
+        finally:
+            _log_request_shape(b"".join(chunks), status["code"], scope)
+
+
+_HEADER_ALLOW = (
+    "user-agent", "accept", "accept-encoding", "accept-language", "content-type",
+    "content-encoding", "content-length", "connection", "cache-control", "pragma",
+    "x-stainless-lang", "x-stainless-package-version", "x-stainless-os",
+    "x-stainless-arch", "x-stainless-runtime", "x-stainless-runtime-version",
+    "x-stainless-retry-count", "x-stainless-timeout",
+    "openai-beta", "anthropic-version", "x-api-key", "origin", "referer", "host",
+)
+
+
+def _log_request_headers(scope):
+    """记录客户端发到网关的请求头。
+
+    为什么要记：DSH 的 429 与我的探针 429 结果不同（同账号、同模型、同形状，
+    探针 200、DSH 429），而请求体已被逐字节复刻排除。剩下唯一没被对比的就是
+    **头部**——pi-ai 这类 SDK 会自带 `x-stainless-*`、`openai-beta` 等标头，
+    而探针没有。头部值是相当强的客户端指纹，若有任何按客户端维度的限流，
+    只可能从这里看出来。
+
+    脱敏边界：只记录白名单里的固定头，且值只输出长度 + 短哈希前缀。
+    `authorization` / `cookie` 永不出现在允许列表里。
+    """
+    if not scope:
+        return
+    try:
+        rows = []
+        for raw_key, raw_value in scope.get("headers") or []:
+            key = raw_key.decode("latin-1").lower()
+            if key not in _HEADER_ALLOW:
+                continue
+            value = raw_value.decode("latin-1")
+            # 不落原文：只留长度与哈希前缀，足够判断「有没有变」。
+            digest = hashlib.sha256(value.encode("latin-1", "replace")).hexdigest()[:8]
+            rows.append(f"{key}(len={len(value)},h={digest})")
+        logging.getLogger("gateway.shape").warning(
+            "request headers: %s", " ".join(sorted(rows)) or "<none>")
+    except Exception:  # noqa: BLE001
+        logging.getLogger("gateway.shape").debug("header logging skipped", exc_info=True)
+
+
+def _log_request_shape(body: bytes, status, scope=None):
+    _log_request_headers(scope)
+    try:
+        value = json.loads(body) if body else {}
+    except (ValueError, UnicodeError):
+        logging.getLogger("gateway.shape").warning(
+            "request shape: unparseable body bytes=%d status=%s", len(body), status)
+        return
+    if not isinstance(value, dict):
+        return
+    messages = value.get("messages")
+    messages = messages if isinstance(messages, list) else []
+    roles = {}
+    for message in messages:
+        if isinstance(message, dict):
+            role = message.get("role")
+            roles[str(role)] = roles.get(str(role), 0) + 1
+    tools = value.get("tools")
+    tools = tools if isinstance(tools, list) else []
+    total_chars = len(json.dumps(messages, ensure_ascii=False)) if messages else 0
+    # tools 数组的体积此前完全没被计入：`chars` 只统计 messages。86 个工具带
+    # 完整 JSON Schema 可能有几十到上百 KB，是 messages 之外最大的一块载荷。
+    tools_bytes = len(json.dumps(tools, ensure_ascii=False)) if tools else 0
+    logging.getLogger("gateway.shape").warning(
+        "request shape: model=%s messages=%d roles=%s chars=%d tools=%d "
+        "tools_bytes=%d total_bytes=%d stream=%s images=%s status=%s",
+        value.get("model"), len(messages),
+        ",".join(f"{k}:{v}" for k, v in sorted(roles.items())),
+        total_chars, len(tools), tools_bytes, total_chars + tools_bytes,
+        value.get("stream") is True,
+        "data:image/" in json.dumps(messages, ensure_ascii=False)[:200000],
+        status,
+    )
+    _log_system_fingerprint(messages)
+
+
+# system 提示词只留结构指纹：长度、行数、以及命中的**固定关键词**。
+# 不写原文任何片段 —— 那里面可能含项目名、路径、内部规则。
+_SYSTEM_PROBES = (
+    "you are", "antigravity", "claude", "codex", "gemini", "assistant",
+    "tool", "function", "system prompt", "instruction", "rule", "sandbox",
+    "workspace", "agent", "reasoning", "thinking", "safety", "policy",
+    "refuse", "disallow", "must not", "do not", "never",
+    "system_instruction", "<", "```", "{{", "}}",
+)
+
+
+def _log_system_fingerprint(messages):
+    texts = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in ("system", "developer"):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    texts.append(block["text"])
+    if not texts:
+        return
+    joined = "\n".join(texts)
+    lowered = joined.lower()
+    hits = [probe for probe in _SYSTEM_PROBES if probe in lowered]
+    logging.getLogger("gateway.shape").warning(
+        "system fingerprint: len=%d lines=%d nonascii=%s keyword_hits=%s "
+        "starts_with_role_marker=%s has_xml=%s has_json_braces=%s",
+        len(joined), joined.count("\n") + 1,
+        any(ord(c) > 127 for c in joined),
+        ",".join(hits) or "-",
+        lowered.lstrip().startswith(("#", "you are", "role")),
+        ">" in joined and "<" in joined,
+        "{" in joined and "}" in joined,
+    )
+
+
+if os.environ.get("GATEWAY_LOG_REQUESTS") == "1":
+    app.add_middleware(RequestShapeLogger)
+    # 形状日志走独立 logger，必须挂到桌面日志文件，否则 pythonw 下无处可去。
+    logging.getLogger("gateway.shape").setLevel(logging.INFO)
+
 app.add_middleware(OAuthCallbackRedaction)
 app.add_middleware(ProtectionMiddleware)
+# 放在最后注册 = 最外层：鉴权与体积上限必须早于任何读取 body 的中间件。
+# 少了它，形状日志会先把未认证请求的 body 读进内存。
 app.add_middleware(RequestLimitsMiddleware)
 bearer = HTTPBearer(auto_error=False, scheme_name="GatewayBearer")
 app.include_router(web_router)
@@ -277,7 +520,18 @@ async def models(request: Request):
     unauthorized = auth_error(request)
     if unauthorized is not None:
         return unauthorized
-    listed = await available_models(request.app.state.pool, request.app.state.web.plugin, refresh=True)
+    listed = list(request.app.state.pool.models)
+    # 12 家的模型由插件网关提供；连不上时只是这批模型缺席，不影响本机号池。
+    # 过滤掉不在 CHANNELS 白名单内的未支持渠道（如匿名渠道 opencode 等），
+    # 以及本机渠道的模型：它们已经由 pool.models 报了，再经插件重复列一次会让
+    # 同一个名字出现两遍，客户端下拉里就分不清哪个是本机哪个是插件。
+    try:
+        probe_models = await request.app.state.web.plugin.probe()
+        listed += [m for m in probe_models
+                   if m not in listed and PluginGateway.provider_of(m) in CHANNELS
+                   and PluginGateway.provider_of(m) not in LOCAL_CHANNELS]
+    except PluginGatewayError:
+        pass
     return {"object": "list", "data": [
         {"id": model, "object": "model", "created": 0, "owned_by": "gateway"}
         for model in listed

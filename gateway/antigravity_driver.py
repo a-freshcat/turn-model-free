@@ -171,6 +171,35 @@ def strip_legacy_markers(text):
     return "".join(out).strip()
 
 
+# ── 出站文本归一化 ───────────────────────────────────────────────────────────
+#
+# 2026-11-13 实测定位：上游对 system prompt 里的 **em dash（U+2014）** 返回
+# `HTTP 429 / RESOURCE_EXHAUSTED`，而所有配额桶都健康。直连 send_native（绕开
+# 号池，避免冷却污染）测到的边界：
+#
+#     system prompt 前 3 行       43 字符  -> 200
+#     + 第 4 行（含 —，37 字符）  81 字符  -> 429
+#     第 4 行单独                 37 字符  -> 429   (3/3)
+#     第 4 行把 — 换成 -          37 字符  -> 200   (3/3)
+#
+# 一个排版字符让上游把请求判成资源耗尽，网关因此冷却账号、客户端重试全部失败。
+# 破折号/弯引号/不间断空格与 ASCII 等价物语义相同，归一化是协议适配，不是绕过。
+_TEXT_HOMOGLYPHS = {
+    "\u2014": "-", "\u2013": "-", "\u2012": "-", "\u2015": "-", "\u2212": "-",
+    "\u2018": "'", "\u2019": "'", "\u201a": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"',
+    "\u00a0": " ", "\u2009": " ", "\u202f": " ",
+    "\u200b": "", "\ufeff": "",
+}
+_TEXT_TRANSLATION = str.maketrans(_TEXT_HOMOGLYPHS)
+
+
+def normalize_outbound_text(text: str) -> str:
+    """把上游敏感的排版类 Unicode 换成 ASCII 等价物。幂等；非字符串原样返回。"""
+    if not isinstance(text, str) or text.isascii():
+        return text
+    return text.translate(_TEXT_TRANSLATION)
+
 def native_request(messages, options, *, signature_lookup=None, signature_borrow=None):
     contents, system, call_names = [], [], {}
     for message in messages:
@@ -180,13 +209,13 @@ def native_request(messages, options, *, signature_lookup=None, signature_borrow
         if isinstance(content, str):
             cleaned = strip_legacy_markers(content)
             if cleaned:
-                parts.append({"text": cleaned})
+                parts.append({"text": normalize_outbound_text(cleaned)})
         elif isinstance(content, list):
             for block in content:
                 if block.get("type") == "text":
                     cleaned = strip_legacy_markers(block.get("text", ""))
                     if cleaned:
-                        parts.append({"text": cleaned})
+                        parts.append({"text": normalize_outbound_text(cleaned)})
                 elif block.get("type") == "image_url":
                     image = block.get("image_url", {})
                     url = image.get("url", "") if isinstance(image, dict) else ""
@@ -199,7 +228,9 @@ def native_request(messages, options, *, signature_lookup=None, signature_borrow
         if role in {"system", "developer"}:
             if any("text" not in part for part in parts):
                 raise InvalidRequest("System instructions must contain text.")
-            system.extend(parts)
+            # system 每轮重发，一旦命中敏感字符就每轮都失败。
+            system.extend({"text": normalize_outbound_text(part["text"])}
+                          for part in parts)
             continue
         if role == "tool":
             name = call_names.get(message.get("tool_call_id"))
@@ -285,7 +316,11 @@ def native_request(messages, options, *, signature_lookup=None, signature_borrow
             function = tool.get("function") or {}
             if tool.get("type") != "function" or not function.get("name"):
                 raise InvalidRequest("Antigravity accepts function tools only.")
-            declaration={k:function[k] for k in ('name','description') if k in function}
+            # 工具描述同样归一化：某个工具的说明里带 em dash 也会让整轮被判成
+            # 资源耗尽。工具名是标识符，不能改写。
+            declaration={k: (normalize_outbound_text(function[k])
+                             if k == 'description' else function[k])
+                         for k in ('name','description') if k in function}
             if 'parameters' in function:
                 cleaned=clean_tool_schema(function['parameters'])
                 # Zero-argument tools do not need a synthetic placeholder parameter.

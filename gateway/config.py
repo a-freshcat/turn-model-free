@@ -56,6 +56,13 @@ class Account(BaseModel):
     # （页面本来就有网络往返），却足以让请求间隔不再是一条直线。
     # 显式写 0 仍然可以关掉（比如要做延迟基准测试）。
     jitter_ms: int = Field(default=300, ge=0, le=5000)
+    # 同一账号两次上游请求之间的最小间隔。默认 0 = 关闭。
+    #
+    # 与 jitter 的分工：jitter 打散毫秒级指纹，这里压住秒级速率上限。
+    # 但实测（30 次请求、间隔压到 0.5s 全部 200）表明上游并不是按请求密度
+    # 限流，所以默认关掉：它为不存在的阈值付延迟，还会与 429 退避叠加
+    # （客户端每次重试再叠一个间隔）。需要时按账号显式开启。
+    min_interval_ms: int = Field(default=0, ge=0, le=600000)
 
     @field_validator("channel", mode="before")
     @classmethod
@@ -213,7 +220,7 @@ def load_settings() -> Settings:
                 "accounts", "id", "driver", "endpoint", "models", "token", "token_env",
                 "cookie", "cookie_env", "user_agent", "device_headers", "status", "fail_count",
                 "max_concurrency", "tencent_prompt_level", "cooldown_seconds", "max_retries",
-                "proxy", "jitter_ms",
+                "proxy", "jitter_ms", "min_interval_ms",
                 "pool_wait_seconds", "first_output_timeout_seconds", "stream_timeout_seconds",
                 "network_cooldown_seconds", "network_cooldown_max_seconds",
             } else "<field>" for part in err["loc"]) or "<root>"

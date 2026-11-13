@@ -230,7 +230,11 @@ class GeminiApiKeyTests(unittest.IsolatedAsyncioTestCase):
                                   "message": "quota"}}
         response = await self.chat({"model": "gemini_api/gemini-3.8-flash",
                                     "messages": [{"role": "user", "content": "Hi"}]})
-        self.assertEqual(response.status_code, 503)
+        # v1.5.1：429 的退避期不再报成 503 「无可用账号」。503 会让客户端把它
+        # 当成故障立刻重试，进一步加深限流；真实的限流应当回 429 + Retry-After，
+        # 让客户端自己等。
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("retry-after", {k.lower() for k in response.headers})
         state = self.pool.states[0]
         self.assertEqual(state.status, "cooldown")
         self.assertEqual(state.last_failure_reason, "gemini_http_429")

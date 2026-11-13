@@ -10,6 +10,24 @@ TRANSIENT_FAILURES = frozenset({
     # Antigravity 的 `antigravity_http_429` 刻意不在此列：那是按池计的配额已经
     # 用尽（Argon/Claude 池），短退避只会把同一个耗尽了的池反复叫醒。
     'gemini_http_429',
+    # Antigravity 的 429 也不能当成「池子耗尽」。
+    #
+    # 早先这里刻意不收录，理由是「那是按池计配额已用尽，短退避只会把同一个
+    # 耗尽了的池反复叫醒」。2026-11-13 的实测证明这个前提是错的，但**当时的
+    # 结论也错了一次**，一并记在这里，避免下次再走同一条弯路：
+    #
+    #   · 撞 429 时 last_60s = 1（60 秒内只有 1 次请求），配额桶 0.96 / 0.99，
+    #     details 为空、无 RetryInfo、无 quotaId；
+    #   · 于是当时判定「上游拒绝的是一个速率窗口」——这个判断是错的。
+    #     30 次间隔 0.5 秒的请求、8 路并发、442k 字符输出全部 200，密度不触发；
+    #   · 真正的成因是 system prompt 里的一个 em dash（U+2014）：37 字符就能
+    #     稳定复现 429，换成 ASCII 减号立刻恢复。详见
+    #     antigravity_driver.normalize_outbound_text 的注释与实测数据。
+    #
+    # 也就是说上游用 RESOURCE_EXHAUSTED 表达了一个**与速率无关**的拒绝。既然
+    # 短退避对真正的成因无效，这里的意义只剩一个：别再锁十分钟。一次内容匹配
+    # 不该让账号停摆 600 秒，快速失败并把真实原因交回客户端更诚实。
+    'antigravity_http_429',
     'plugin_transport', 'plugin_stream_transport',
     'first_output_timeout', 'completion_timeout', 'stream_timeout', 'test_timeout',
     'http_408', 'http_500', 'http_502', 'http_503', 'http_504',
