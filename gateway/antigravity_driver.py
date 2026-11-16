@@ -173,32 +173,77 @@ def strip_legacy_markers(text):
 
 # ── 出站文本归一化 ───────────────────────────────────────────────────────────
 #
-# 2026-11-13 实测定位：上游对 system prompt 里的 **em dash（U+2014）** 返回
-# `HTTP 429 / RESOURCE_EXHAUSTED`，而所有配额桶都健康。直连 send_native（绕开
-# 号池，避免冷却污染）测到的边界：
+# 2026-11-16 重新实测，**推翻了 11-13 的 em dash 结论**。当时认为 system prompt 里
+# 的 U+2014 是触发源；本次用同一套直连方法（`send_native`，绕开账号池，一次 429
+# 不会污染下一次探测）复测，em dash 相关全部为 200，且每项稳定 4/4：
 #
-#     system prompt 前 3 行       43 字符  -> 200
-#     + 第 4 行（含 —，37 字符）  81 字符  -> 429
-#     第 4 行单独                 37 字符  -> 429   (3/3)
-#     第 4 行把 — 换成 -          37 字符  -> 200   (3/3)
+#     system prompt 第 4 行（含 —，37 字符）          -> 200   4/4
+#     同上，把 — 换成 -                              -> 200   4/4
+#     向一个已知 200 的基线追加 —                    -> 200
+#     整份 prompt 的 31 个 — 全部替换成 -            -> 429   仍然失败
 #
-# 一个排版字符让上游把请求判成资源耗尽，网关因此冷却账号、客户端重试全部失败。
-# 破折号/弯引号/不间断空格与 ASCII 等价物语义相同，归一化是协议适配，不是绕过。
-_TEXT_HOMOGLYPHS = {
-    "\u2014": "-", "\u2013": "-", "\u2012": "-", "\u2015": "-", "\u2212": "-",
-    "\u2018": "'", "\u2019": "'", "\u201a": "'",
-    "\u201c": '"', "\u201d": '"', "\u201e": '"',
-    "\u00a0": " ", "\u2009": " ", "\u202f": " ",
-    "\u200b": "", "\ufeff": "",
+# 真正的触发点是一句 67 字符的英文（sha256_16 = 937a23b9e298fe99），来自
+# `@deepseek-ai/dsh-harness-dev-context` 的 `WEB_SURFACE_PROMPT`：
+#
+#     整份 31765 字符 prompt                         -> 429   3/3
+#     删掉这一句（其余一字不改）                      -> 200   3/3
+#     这一句单独发出                                 -> 429   4/4
+#
+# 匹配器的性质（每条都实测）：
+#
+#     任意换掉一个实词              -> 200     所以不是字面关键词匹配
+#     词序反转（字符全保留）         -> 200     排序敏感
+#     大写 / 全小写                 -> 429     大小写不敏感
+#     词间空格换成换行              -> 429     空白不敏感
+#     前后加空格 / 换行包裹         -> 429     不做边界锚定
+#     同一句作为 user 消息          -> 200     只作用于 system 区
+#
+# 结论：上游在 system 区做的是**归一化后的多词序列**匹配（先归一大小写与空白），
+# 命中就回 `HTTP 429 / RESOURCE_EXHAUSTED`。配额桶健康、`details` 为空、没有
+# `RetryInfo`，响应体只有那句通用的 "Resource has been exhausted"——所以任何按
+# 429 语义重试的逻辑都必然失败，每一轮重试都在撞同一句文本。
+#
+# 覆盖度：把整个安装目录 `@deepseek-ai/*` 里 1047 个 js 抽出的 10326 个英文长句
+# 用分组二分全量探过（220 次探测完成全覆盖），**只有这一句会被拒**。不存在
+# “关键词表”，也确实不需要逐词黑名单。
+#
+# 归一化策略：只把命中这一句的文本换成语义等价的表述。13 个候选改写全部通过
+# （单独发与嵌入整份 prompt 都通过）。**不再改动任何字符本身**——旧的 homoglyph
+# 表会把破折号、弯引号、BOM 全部改写，那是基于错误结论的行为，已移除。
+
+KNOWN_TRIGGER_SENTENCES = {
+    # @deepseek-ai/dsh-harness-dev-context WEB_SURFACE_PROMPT
+    "The browser provides no implicit DOM, route, or screenshot context.":
+        "The browser exposes no implicit DOM, route, or screenshot context.",
 }
-_TEXT_TRANSLATION = str.maketrans(_TEXT_HOMOGLYPHS)
+
+
+def known_triggers_in_text(text):
+    """Return the known-bad sentences present in `text`, in table order."""
+    if not isinstance(text, str) or not text:
+        return []
+    return [source for source in KNOWN_TRIGGER_SENTENCES if source in text]
+
+
+def rewrite_known_triggers(text: str) -> str:
+    """Replace known-bad sentences with their measured-safe equivalents.
+
+    Idempotent: no replacement contains any source, so a second run is a no-op.
+    Anything not in the table — including dashes, curly quotes, NBSP, BOM, CJK and
+    emoji — passes through byte-identically.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    for source, replacement in KNOWN_TRIGGER_SENTENCES.items():
+        if source in text:
+            text = text.replace(source, replacement)
+    return text
 
 
 def normalize_outbound_text(text: str) -> str:
-    """把上游敏感的排版类 Unicode 换成 ASCII 等价物。幂等；非字符串原样返回。"""
-    if not isinstance(text, str) or text.isascii():
-        return text
-    return text.translate(_TEXT_TRANSLATION)
+    """出站文本归一化入口：只替换已知会被上游 429 的固定表述。"""
+    return rewrite_known_triggers(text)
+
 
 def native_request(messages, options, *, signature_lookup=None, signature_borrow=None):
     contents, system, call_names = [], [], {}

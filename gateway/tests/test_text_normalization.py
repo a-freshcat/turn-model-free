@@ -1,104 +1,125 @@
-"""Regression: outbound text normalisation for the upstream's dash sensitivity.
+"""Regression: the exact system-prompt sentence Antigravity answers 429 to.
 
-Measured 2026-11-13, direct `send_native` so pool cooling could not confound it:
+Measured 2026-11-16 with direct `send_native` (no pool, so one 429 cannot poison
+the next probe), each case stable across repeats:
 
-    3 lines of the real system prompt    43 chars  ->  200
-    the 37-char 4th line alone                    ->  429   3/3
-    the same line with the em dash as '-'         ->  200   3/3
-    the line embedded in 40 lines                 ->  429
+    the whole 31765-char system prompt               -> 429   3/3
+    the same prompt minus one 67-char sentence       -> 200   3/3
+    that sentence alone                              -> 429   4/4
+    that sentence, any single content word edited    -> 200
+    that sentence, word order reversed               -> 200
+    that sentence, upper- or lower-cased             -> 429
+    that sentence, spaces turned into newlines       -> 429
+    that sentence, padded on either side             -> 429
+    that sentence sent as a user message             -> 200
 
-One U+2014 em dash made the upstream answer `HTTP 429 / RESOURCE_EXHAUSTED`
-while every quota bucket read healthy. The gateway treated that as a rate limit,
-cooled the account, and retried — none of which could ever help, because the
-request was being rejected for its text, not its rate.
+So the upstream does a normalised, order-sensitive multi-word match over the
+system region only, and answers `HTTP 429 / RESOURCE_EXHAUSTED` with a generic
+message, empty `details` and no `RetryInfo`. Treating that as a rate limit can
+never help: every retry re-sends the same sentence.
 
-`normalize_outbound_text` maps typographic characters to ASCII equivalents at
-the three outbound sites: system text, message text, tool descriptions.
+An earlier round blamed U+2014 for this and rewrote every dash and curly quote on
+the way out. That was wrong — the em-dash cases all pass, and rewriting
+user-visible punctuation is visible damage. Those tests are gone with it.
 """
 import pytest
 
 import antigravity_driver as drv
 
-
-# ── the translation itself ──────────────────────────────────────────────────
-
-def test_em_dash_becomes_hyphen():
-    assert drv.normalize_outbound_text("a \u2014 b") == "a - b"
+KNOWN_TRIGGER_SENTENCES = drv.KNOWN_TRIGGER_SENTENCES
+known_triggers_in_text = drv.known_triggers_in_text
+rewrite_known_triggers = drv.rewrite_known_triggers
 
 
-def test_en_dash_and_minus_sign_also_become_hyphen():
-    assert drv.normalize_outbound_text("a \u2013 b") == "a - b"
-    assert drv.normalize_outbound_text("a \u2212 b") == "a - b"
+TRIGGER = "The browser provides no implicit DOM, route, or screenshot context."
+CLEAN = "The browser exposes no implicit DOM, route, or screenshot context."
 
 
-def test_curly_quotes_become_ascii_quotes():
-    assert drv.normalize_outbound_text("\u201cq\u201d") == '"q"'
-    assert drv.normalize_outbound_text("\u2018q\u2019") == "'q'"
+# ── the trigger table ───────────────────────────────────────────────────────
+
+def test_known_trigger_set_is_not_empty():
+    assert KNOWN_TRIGGER_SENTENCES
 
 
-def test_no_break_space_becomes_plain_space():
-    assert drv.normalize_outbound_text("a\u00a0b") == "a b"
+def test_every_entry_rewrites_to_something_different():
+    for source, replacement in KNOWN_TRIGGER_SENTENCES.items():
+        assert source != replacement
+        assert source and replacement
 
 
-def test_zero_width_characters_are_dropped():
-    assert drv.normalize_outbound_text("a\u200bb") == "ab"
-    assert drv.normalize_outbound_text("\ufeffa") == "a"
+def test_detects_the_measured_sentence():
+    assert known_triggers_in_text("prefix " + TRIGGER + " suffix") == [TRIGGER]
+    assert known_triggers_in_text(CLEAN) == []
 
 
-def test_ascii_text_is_untouched():
-    text = "plain ascii with - and 'quotes' and \"more\""
-    assert drv.normalize_outbound_text(text) == text
+def test_detects_nothing_in_ordinary_prose():
+    assert known_triggers_in_text("The browser is a program that renders pages.") == []
+    assert known_triggers_in_text("") == []
 
 
-def test_other_scripts_survive():
-    """Normalisation must not damage CJK, accents or emoji."""
-    for text in ("中文提示词", "café résumé", "emoji 🚀 ok"):
-        assert drv.normalize_outbound_text(text) == text
+# ── the rewrite ─────────────────────────────────────────────────────────────
+
+def test_rewrites_the_trigger():
+    assert rewrite_known_triggers(TRIGGER) == CLEAN
 
 
-def test_is_idempotent():
-    once = drv.normalize_outbound_text("a \u2014 b \u201cq\u201d")
-    assert drv.normalize_outbound_text(once) == once
+def test_rewrite_keeps_surrounding_text():
+    text = "before. " + TRIGGER + " after."
+    assert rewrite_known_triggers(text) == "before. " + CLEAN + " after."
 
 
-def test_non_string_values_pass_through():
-    assert drv.normalize_outbound_text(None) is None
-    assert drv.normalize_outbound_text(42) == 42
+def test_rewrite_is_idempotent():
+    once = rewrite_known_triggers(TRIGGER)
+    assert rewrite_known_triggers(once) == once
 
 
-def test_result_is_ascii_when_input_is_only_typographic():
-    assert drv.normalize_outbound_text("a \u2014 b \u2013 c").isascii()
+def test_rewrite_handles_repeated_occurrences():
+    text = TRIGGER + " " + TRIGGER
+    assert rewrite_known_triggers(text) == CLEAN + " " + CLEAN
 
 
-# ── the three outbound sites ────────────────────────────────────────────────
+def test_rewrite_leaves_punctuation_alone():
+    """The disproven fix rewrote dashes and quotes; this one must not."""
+    for text in ("a \u2014 b", "\u201cq\u201d", "\u2018q\u2019",
+                 "a\u00a0b", "a\u200bb", "\ufeffa", "中文 — ok"):
+        assert rewrite_known_triggers(text) == text
+
+
+def test_rewrite_leaves_non_strings_alone():
+    assert rewrite_known_triggers(None) is None
+    assert rewrite_known_triggers(42) == 42
+
+
+def test_rewrite_leaves_empty_alone():
+    assert rewrite_known_triggers("") == ""
+
+
+# ── the outbound wire ───────────────────────────────────────────────────────
 
 def _wire(messages, tools=None):
     options = {"tools": tools} if tools else {}
     return drv.native_request(messages, options)
 
 
-def test_system_text_is_normalised():
-    wire = _wire([{"role": "system", "content": "rule \u2014 one"},
+def test_system_trigger_is_rewritten_on_the_wire():
+    wire = _wire([{"role": "system", "content": TRIGGER},
                   {"role": "user", "content": "hi"}])
-    parts = wire["systemInstruction"]["parts"]
-    assert parts[0]["text"] == "rule - one"
-    assert parts[0]["text"].isascii()
+    assert wire["systemInstruction"]["parts"][0]["text"] == CLEAN
 
 
-def test_message_text_is_normalised():
-    wire = _wire([{"role": "user", "content": "turn \u2014 now"}])
-    assert wire["contents"][0]["parts"][0]["text"] == "turn - now"
+def test_message_trigger_is_rewritten_on_the_wire():
+    wire = _wire([{"role": "user", "content": TRIGGER}])
+    assert wire["contents"][0]["parts"][0]["text"] == CLEAN
 
 
-def test_tool_description_is_normalised():
+def test_tool_description_trigger_is_rewritten_on_the_wire():
     tools = [{"type": "function", "function": {
         "name": "t",
-        "description": "does \u2014 things",
+        "description": TRIGGER,
         "parameters": {"type": "object", "properties": {}}}}]
     wire = _wire([{"role": "user", "content": "hi"}], tools)
     declaration = wire["tools"][0]["functionDeclarations"][0]
-    assert declaration["description"] == "does - things"
-    assert declaration["description"].isascii()
+    assert declaration["description"] == CLEAN
 
 
 def test_tool_name_is_never_rewritten():
@@ -111,15 +132,7 @@ def test_tool_name_is_never_rewritten():
     assert wire["tools"][0]["functionDeclarations"][0]["name"] == "keep_this_name"
 
 
-def test_normalisation_applies_to_marked_text_too():
-    """Text carrying a legacy marker still gets its typography folded.
-
-    `strip_legacy_markers` may discard the marked span entirely — that is the
-    pre-existing replay behaviour and not what this file is about. What matters
-    here is the ordering: whatever survives the strip is normalised, so a marker
-    cannot smuggle an em dash through.
-    """
-    wire = _wire([{"role": "user",
-                   "content": "keep this \u2014 part"}])
-    text = wire["contents"][0]["parts"][0]["text"]
-    assert text == "keep this - part"
+def test_wire_keeps_typography_intact():
+    """A request carrying a real em dash must go out byte-identical."""
+    wire = _wire([{"role": "user", "content": "turn \u2014 now"}])
+    assert wire["contents"][0]["parts"][0]["text"] == "turn \u2014 now"
