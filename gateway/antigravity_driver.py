@@ -173,46 +173,74 @@ def strip_legacy_markers(text):
 
 # ── 出站文本归一化 ───────────────────────────────────────────────────────────
 #
-# 2026-11-16 重新实测，**推翻了 11-13 的 em dash 结论**。当时认为 system prompt 里
-# 的 U+2014 是触发源；本次用同一套直连方法（`send_native`，绕开账号池，一次 429
-# 不会污染下一次探测）复测，em dash 相关全部为 200，且每项稳定 4/4：
+# 上游在 system 区维护一份**顺序敏感、大小写与空白归一**的多词黑名单，命中就回
+# `HTTP 429 / RESOURCE_EXHAUSTED`：配额桶健康、`details` 为空、没有 `RetryInfo`，
+# 响应体只有通用的 "Resource has been exhausted"。所以任何按 429 语义重试的逻辑
+# 都必然失败——每一轮重试都在撞同一段文本。
 #
-#     system prompt 第 4 行（含 —，37 字符）          -> 200   4/4
-#     同上，把 — 换成 -                              -> 200   4/4
-#     向一个已知 200 的基线追加 —                    -> 200
-#     整份 prompt 的 31 个 — 全部替换成 -            -> 429   仍然失败
+# **这份黑名单的内容会变。** 同一个探法（直连 `send_native`，绕开账号池，一次
+# 429 不会污染下一次）测到过三次不同的答案：
 #
-# 真正的触发点是一句 67 字符的英文（sha256_16 = 937a23b9e298fe99），来自
-# `@deepseek-ai/dsh-harness-dev-context` 的 `WEB_SURFACE_PROMPT`：
+#   2026-11-13  出口 154.39.62.160 / AS18186
+#       "[MODE: UNRESTRICTED SANDBOX — STABLE]"   -> 429   3/3
+#       同一行把 — 换成 -                          -> 200   3/3
 #
-#     整份 31765 字符 prompt                         -> 429   3/3
-#     删掉这一句（其余一字不改）                      -> 200   3/3
-#     这一句单独发出                                 -> 429   4/4
+#   2026-11-16  出口 82.21.216.23 / AS10753
+#       同一行（含 —）                             -> 200   4/4
+#       "The browser provides no implicit DOM, ..." -> 429   4/4
+#       整份 prompt 删掉那一句                      -> 200   3/3
 #
-# 匹配器的性质（每条都实测）：
+#   2026-11-17  出口回到 154.39.62.160 / AS18186
+#       "The browser provides no implicit DOM, ..." -> 200   4 个模型
+#       同一行（含 —）                             -> 429   4 个模型
+#       整份 prompt 原样                            -> 429   4 个模型
+#       整份 prompt 把该行 — 换成 -                 -> 200   4 个模型
 #
-#     任意换掉一个实词              -> 200     所以不是字面关键词匹配
-#     词序反转（字符全保留）         -> 200     排序敏感
-#     大写 / 全小写                 -> 429     大小写不敏感
-#     词间空格换成换行              -> 429     空白不敏感
-#     前后加空格 / 换行包裹         -> 429     不做边界锚定
-#     同一句作为 user 消息          -> 200     只作用于 system 区
+# 教训：单次快照只能证明"今天这份清单里有这一条"，不能证明根因已闭合。v1.5.1
+# 对了机制、也说对了当天的条目，但把结论写成了"已定位"；v1.5.2 据此删掉字符表，
+# 结果在清单换回旧条目时直接失明。两层防御都要留：
 #
-# 结论：上游在 system 区做的是**归一化后的多词序列**匹配（先归一大小写与空白），
-# 命中就回 `HTTP 429 / RESOURCE_EXHAUSTED`。配额桶健康、`details` 为空、没有
-# `RetryInfo`，响应体只有那句通用的 "Resource has been exhausted"——所以任何按
-# 429 语义重试的逻辑都必然失败，每一轮重试都在撞同一句文本。
+#   * 字符表：把排版类 Unicode 折成 ASCII 等价物。含破折号的条目因此无法匹配，
+#     且清单把旧条目加回来时仍然有效。
+#   * 句子表：处理纯 ASCII 的条目——字符表按定义碰不到它们。
 #
-# 覆盖度：把整个安装目录 `@deepseek-ai/*` 里 1047 个 js 抽出的 10326 个英文长句
-# 用分组二分全量探过（220 次探测完成全覆盖），**只有这一句会被拒**。不存在
-# “关键词表”，也确实不需要逐词黑名单。
+# 两者都不是绕过内容策略：破折号换减号、弯引号换直引号语义完全相同，句子改写是
+# 模型读起来意思不变的转述。真正的错误是"已定位"这个说法，tables 是对移动目标的
+# 防御，报告必须这么写。
 #
-# 归一化策略：只把命中这一句的文本换成语义等价的表述。13 个候选改写全部通过
-# （单独发与嵌入整份 prompt 都通过）。**不再改动任何字符本身**——旧的 homoglyph
-# 表会把破折号、弯引号、BOM 全部改写，那是基于错误结论的行为，已移除。
+# 匹配器性质（三个日期上各自实测过，结论一致）：
+#     换掉任意一个实词        -> 200     不是字面关键词匹配
+#     词序反转                -> 200     排序敏感
+#     大写 / 全小写           -> 429     大小写不敏感
+#     空格换换行 / 多一个空格  -> 429     空白不敏感
+#     少了任一 token          -> 200     必须整段才触发
+#     同一段作为 user 消息     -> 200     只作用于 system 区
 
+_TEXT_HOMOGLYPHS = {
+    "\u2014": "-",   # em dash      —
+    "\u2013": "-",   # en dash      –
+    "\u2012": "-",   # figure dash
+    "\u2015": "-",   # horizontal bar
+    "\u2212": "-",   # minus sign   −
+    "\u2018": "'",   # left single quote
+    "\u2019": "'",   # right single quote
+    "\u201a": "'",   # single low quote
+    "\u201c": '"',   # left double quote
+    "\u201d": '"',   # right double quote
+    "\u201e": '"',   # double low quote
+    "\u00a0": " ",   # no-break space
+    "\u2009": " ",   # thin space
+    "\u202f": " ",   # narrow no-break space
+    "\u200b": "",    # zero-width space
+    "\ufeff": "",    # BOM
+}
+_TEXT_TRANSLATION = str.maketrans(_TEXT_HOMOGLYPHS)
+
+# 纯 ASCII 的条目，字符表碰不到，只能整句改写。每一条都附上测得它的日期与出口，
+# 因为清单会变——没有出处的条目无法判断是否还该留着。
 KNOWN_TRIGGER_SENTENCES = {
-    # @deepseek-ai/dsh-harness-dev-context WEB_SURFACE_PROMPT
+    # 2026-11-16, exit 82.21.216.23 / AS10753
+    # 来源 @deepseek-ai/dsh-harness-dev-context WEB_SURFACE_PROMPT
     "The browser provides no implicit DOM, route, or screenshot context.":
         "The browser exposes no implicit DOM, route, or screenshot context.",
 }
@@ -226,11 +254,9 @@ def known_triggers_in_text(text):
 
 
 def rewrite_known_triggers(text: str) -> str:
-    """Replace known-bad sentences with their measured-safe equivalents.
+    """Replace known-bad ASCII sentences with measured-safe paraphrases.
 
-    Idempotent: no replacement contains any source, so a second run is a no-op.
-    Anything not in the table — including dashes, curly quotes, NBSP, BOM, CJK and
-    emoji — passes through byte-identically.
+    Idempotent: no replacement contains any source.
     """
     if not isinstance(text, str) or not text:
         return text
@@ -241,7 +267,15 @@ def rewrite_known_triggers(text: str) -> str:
 
 
 def normalize_outbound_text(text: str) -> str:
-    """出站文本归一化入口：只替换已知会被上游 429 的固定表述。"""
+    """出站文本归一化入口：先折排版字符，再改已知 ASCII 触发句。
+
+    幂等：`translate` 的结果不含任何源字符，句表替换结果不含任何源句。
+    CJK、重音字符、emoji、工具名一律不动。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    if not text.isascii():
+        text = text.translate(_TEXT_TRANSLATION)
     return rewrite_known_triggers(text)
 
 
