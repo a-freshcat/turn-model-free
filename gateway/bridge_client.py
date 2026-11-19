@@ -73,6 +73,8 @@ class PackBridge:
                  request_timeout: float = 130.0, start_timeout: float = 45.0,
                  proxy: str | None = None):
         self.node = node or shutil.which("node") or "node"
+        self._discover_electron = node is None and sys.platform == "win32"
+        self._electron: str | None = None
         self.script = script or ROOT / "scripts" / "pack_bridge.mjs"
         self.loader = ROOT / "scripts" / "pack_register.mjs"
         self.pack_home = pack_home or os.environ.get("DSH_PACK_HOME") or str(self.DEFAULT_PACK_HOME)
@@ -121,8 +123,22 @@ class PackBridge:
         # 直接给 `C:\...` 会被当成协议名 'c:' 而报 ERR_UNSUPPORTED_ESM_URL_SCHEME。
         loader_url = Path(self.loader).resolve().as_uri()
         try:
+            if self._discover_electron and not env.get("DSH_NODE_MODULES") and self._electron is None:
+                resolver = (self.loader.parent / "dsh_modules.mjs").resolve().as_uri()
+                discovery = await asyncio.create_subprocess_exec(
+                    self.node, "--input-type=module", "-e",
+                    f"import {{findDshElectron}} from {json.dumps(resolver)}; "
+                    "process.stdout.write(findDshElectron())",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    env=env, **_hidden_child_kwargs(),
+                )
+                stdout, _ = await discovery.communicate()
+                self._electron = os.fsdecode(stdout) if discovery.returncode == 0 else ""
+            executable = self._electron or self.node
+            if self._electron:
+                env["ELECTRON_RUN_AS_NODE"] = "1"
             process = await asyncio.create_subprocess_exec(
-                self.node, "--import", loader_url, str(self.script),
+                executable, "--import", loader_url, str(self.script),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, env=env, cwd=str(ROOT),
                 **_hidden_child_kwargs(),

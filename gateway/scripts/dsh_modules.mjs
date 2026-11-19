@@ -27,8 +27,10 @@ function registryLocations() {
     const found = []
     for (const block of out.split(/\r?\n\r?\n/)) {
       if (!/DeepSeek\s+Harness/i.test(block)) continue
-      const match = block.match(/InstallLocation\s+REG_\w+\s+(.+)/)
-      if (match) found.push(match[1].trim())
+      const location = block.match(/InstallLocation\s+REG_\w+\s+(.+)/)?.[1].trim()
+      const icon = block.match(/DisplayIcon\s+REG_\w+\s+"?([^"\r\n]+?\.exe)(?:"|,|\s*$)/im)?.[1]
+      if (location) found.push(location)
+      if (icon && path.isAbsolute(icon)) found.push(path.dirname(icon))
     }
     return found
   } catch {
@@ -42,24 +44,43 @@ const RELATIVE_LAYOUTS = [
   ['node_modules'],                              // 未打包的安装
 ]
 
-export function findDshModules() {
-  if (process.env.DSH_NODE_MODULES) return process.env.DSH_NODE_MODULES
-
-  const candidates = []
-
-  // 1. 常见安装根 + 常见产品名
+function installationLocations() {
   const roots = [
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs'),
     process.env.ProgramFiles,
     process.env['ProgramFiles(x86)'],
     '/usr/lib', '/usr/local/lib', '/Applications',
   ].filter(Boolean)
-  for (const root of roots) {
-    for (const name of ['dsh', 'DSH', 'DeepSeek Harness', 'deepseek-harness']) {
-      for (const rel of RELATIVE_LAYOUTS) {
-        candidates.push(path.join(root, name, ...rel))
-      }
+  const names = ['dsh', 'DSH', 'DeepSeek Harness', 'deepseek-harness']
+  return [...roots.flatMap(root => names.map(name => path.join(root, name))),
+    ...registryLocations()]
+}
+
+export function findDshElectron() {
+  if (process.platform !== 'win32' || process.env.DSH_NODE_MODULES) return ''
+  for (const location of installationLocations()) {
+    const executable = path.join(location, 'DeepSeek Harness.exe')
+    if (fs.existsSync(executable) && fs.existsSync(path.join(location, 'resources', 'app.asar'))) {
+      return executable
     }
+  }
+  return ''
+}
+
+let detectedModules
+
+export function findDshModules() {
+  if (process.env.DSH_NODE_MODULES) return process.env.DSH_NODE_MODULES
+  if (detectedModules !== undefined) return detectedModules
+
+  const candidates = []
+  if (process.versions.electron) {
+    const resources = path.join(path.dirname(process.execPath), 'resources')
+    candidates.push(path.join(resources, 'app.asar', 'dsh', 'node_modules'))
+    candidates.push(path.join(resources, 'app.asar', 'node_modules'))
+  }
+  for (const location of installationLocations()) {
+    for (const rel of RELATIVE_LAYOUTS) candidates.push(path.join(location, ...rel))
   }
 
   // 2. 从插件目录往上逐级找
@@ -71,15 +92,8 @@ export function findDshModules() {
     candidates.push(cursor)
   }
 
-  // 3. 注册表（Windows 上最准，不要求进程在跑）
-  for (const location of registryLocations()) {
-    for (const rel of RELATIVE_LAYOUTS) {
-      candidates.push(path.join(location, ...rel))
-    }
-  }
-
-  for (const dir of candidates) if (has(dir)) return dir
-  return ''
+  detectedModules = candidates.find(has) || ''
+  return detectedModules
 }
 
 /** 指向 DSH node_modules 的 require；找不到时退回自身，让 require 报出真实缺失。 */

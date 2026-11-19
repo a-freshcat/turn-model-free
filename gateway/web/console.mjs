@@ -1033,6 +1033,9 @@ async function handleAction(id, act, row) {
 
 async function startLogin(provider) {
   const meta = CHANNELS[provider] || { label: provider }
+  const notice = $('login-error')
+  notice.hidden = true
+  notice.textContent = ''
   try {
     if (provider === 'antigravity') {
       const reply = await rpc('account.create', { provider })
@@ -1059,8 +1062,10 @@ async function startLogin(provider) {
     if (!url) throw new Error('未返回登录地址')
     window.open(url, '_blank', 'noopener')
     window.alert(`已打开 ${meta.label} 登录页。完成登录后回到本页点「刷新」。`)
-  } catch (error) {
-    window.alert(`${meta.label} 登录未能启动：${error.message}`)
+  } catch {
+    notice.textContent = `${meta.label} 登录未能启动，请重试。`
+    notice.hidden = false
+    notice.scrollIntoView({ block: 'nearest' })
   }
 }
 
